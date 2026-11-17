@@ -953,7 +953,7 @@ export async function searchDocuments(
         END as similarity
       FROM documents 
       WHERE type = $1
-      ORDER BY similarity DESC
+      ORDER BY similarity DESC, workday_id ASC
       LIMIT $2
     `, [
       documentType,
@@ -996,7 +996,7 @@ export async function searchDocumentsByTypes(
         END as similarity
       FROM documents
       WHERE type = ANY($1)
-      ORDER BY similarity DESC
+      ORDER BY similarity DESC, workday_id ASC
       LIMIT $2
     `, [documentTypes, limit, queryText.trim()]) as Array<ReferenceDocument & { similarity: number }>;
 

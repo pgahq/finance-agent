@@ -124,6 +124,7 @@ jest.mock('../lib/ai.js', () => {
       printedSupplier: textFields(full?.supplier?.extractedInformation),
       printedBillTo: textFields(full?.companyVerification?.extractedInformation),
       ...headerText,
+      bankingInfoPrinted: full?.bankingInfoPrinted ?? false,
       extractedOtherCharges: full?.extractedOtherCharges ?? [],
       extractedSummaryCharges: full?.extractedSummaryCharges ?? [],
       extractedLineSubtotal: full?.extractedLineSubtotal ?? { label: '', amount: '' },
@@ -885,6 +886,51 @@ describe('enrich_invoice', () => {
         paymentTermsId: undefined,
       }
     );
+  });
+
+  it('passes the banking-info flag to the Workday update and says so in the note', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier', memo: 'Test invoice' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedInvoiceDate: '2026-04-15',
+      bankingInfoPrinted: true,
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ bankingInfoIncluded: true })
+    );
+    const { buildNotes } = submitSupplierInvoiceUpdate.mock.calls[0][1];
+    expect(buildNotes([])).toContain('Banking information is printed in the attached documents. Verify it before payment.');
   });
 
   it('uses the existing Workday supplier name when the extracted name has no letters', async () => {
@@ -1767,6 +1813,261 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([added]);
   });
 
+  it('keeps a payroll Taxes row on the lines on update instead of header tax (fictional payroll recharge)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { payrollRechargeHeader, payrollRechargeSiblingRows, payrollTaxesCharge } = require('./fixtures/payroll_recharge.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Staffing Co', memo: 'staff recharge' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...payrollRechargeHeader,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: payrollRechargeSiblingRows,
+      extractedOtherCharges: [payrollTaxesCharge],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice) })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: 'INV-900001$1', id: '0627e00a601c1001085f64bd33e20001' }
+      }]
+    } as any);
+
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.extractedTaxAmount).toBeUndefined();
+    expect(params.finalLines.map((line: { description: string; extendedAmount: number }) => [line.description, line.extendedAmount]))
+      .toEqual([['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500]]);
+    const kept = 'Kept "Taxes" $500.00 on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and this reads as payroll or employment tax.';
+    expect(params.buildNotes([])).toContain(`Amount check: ${kept}`);
+    expect(params.buildNotes([])).not.toContain('Added "Taxes"');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([kept]);
+  });
+
+  it('clears a payroll Taxes amount read straight into the main Tax_Amount field on update (fictional payroll recharge)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { payrollRechargeHeader, payrollRechargeSiblingRows } = require('./fixtures/payroll_recharge.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Staffing Co', memo: 'staff recharge' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...payrollRechargeHeader,
+      extractedTaxAmount: '$500.00',
+      extractedTaxLabel: 'Taxes',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: payrollRechargeSiblingRows,
+      extractedOtherCharges: null,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice) })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: 'INV-900001$1', id: '0627e00a601c1001085f64bd33e20001' }
+      }]
+    } as any);
+
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.extractedTaxAmount).toBeUndefined();
+    expect(params.taxCleared).toBe(true);
+    expect(params.finalLines.map((line: { description: string; extendedAmount: number }) => [line.description, line.extendedAmount]))
+      .toEqual([['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500]]);
+  });
+
+  it('does not pin a payroll tax charge to a PO service line on update, even when its long label matches one (fictional payroll recharge)', async () => {
+    // Unlike the bare "Taxes" row above, "Employer Payroll Taxes" is long enough to satisfy the service-line
+    // matcher's own length guard, so a PO service line printed with the identical description would otherwise
+    // match it. The exclusion in placeChargesOnPoServiceLines has to stop that on update the same way it does
+    // on create.
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { payrollRechargeHeader, payrollRechargeSiblingRows } = require('./fixtures/payroll_recharge.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-900002',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Issued',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
+            },
+            Service_Line_Data: {
+              Line_Number: 1,
+              Service_Order_Line_ID: 'POL-900002-1',
+              Description: 'Employer Payroll Taxes',
+              Extended_Amount: 500
+            }
+          }
+        }
+      }
+    });
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Staffing Co', memo: 'staff recharge' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...payrollRechargeHeader,
+      extractedPurchaseOrderNumber: 'PO-900002',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: payrollRechargeSiblingRows,
+      extractedOtherCharges: [{ label: 'Employer Payroll Taxes', amount: '$500.00' }],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string; pinnedPurchaseOrderLineId?: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice), purchaseOrderLineId: line.pinnedPurchaseOrderLineId ?? null })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: 'INV-900002$1', id: '0627e00a601c1001085f64bd33e20002' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1)[0] as Array<{ description: string; pinnedPurchaseOrderLineId?: string }>;
+    const taxesCandidate = built.find(line => line.description === 'Employer Payroll Taxes');
+    expect(taxesCandidate).toBeDefined();
+    expect(taxesCandidate?.pinnedPurchaseOrderLineId).toBeUndefined();
+  });
+
+  it('does not pin a payroll tax charge to a PO service line on update when a free Wages row signals the recharge (fictional payroll recharge)', async () => {
+    // The free Wages $0.00 row is dropped from the placed rows, so only the full printed row set still shows
+    // this is a payroll recharge. The exclusion has to classify from that full set on update as on create.
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { payrollRechargeHeader, payrollRechargeSiblingRows } = require('./fixtures/payroll_recharge.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-900003',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Issued',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
+            },
+            Service_Line_Data: {
+              Line_Number: 1,
+              Service_Order_Line_ID: 'POL-900003-1',
+              Description: 'Taxes Billed Monthly',
+              Extended_Amount: 500
+            }
+          }
+        }
+      }
+    });
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Staffing Co', memo: 'staff recharge' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...payrollRechargeHeader,
+      extractedAmountDue: '$1,000.00',
+      extractedPurchaseOrderNumber: 'PO-900003',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [{ ...payrollRechargeSiblingRows[0], totalPrice: '0.00' }, payrollRechargeSiblingRows[1], payrollRechargeSiblingRows[2]],
+      extractedOtherCharges: [{ label: 'Taxes Billed Monthly', amount: '$500.00' }],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string; pinnedPurchaseOrderLineId?: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice), purchaseOrderLineId: line.pinnedPurchaseOrderLineId ?? null })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: 'INV-900002$1', id: '0627e00a601c1001085f64bd33e20002' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1)[0] as Array<{ description: string; pinnedPurchaseOrderLineId?: string }>;
+    const taxesCandidate = built.find(line => line.description === 'Taxes Billed Monthly');
+    expect(taxesCandidate).toBeDefined();
+    expect(taxesCandidate?.pinnedPurchaseOrderLineId).toBeUndefined();
+  });
+
   it('replaces the printed lines with one deposit line on update (SUPIN-470584)', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -2042,7 +2343,11 @@ describe('enrich_invoice', () => {
       const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
       const { notifyEnrichmentResult } = require('../lib/slack.js');
+      const { getDocumentsByWorkdayIds } = require('../lib/database.js');
       enrichmentResponse.mockResolvedValueOnce(ibsEnrichment);
+      (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValueOnce([
+        { workday_id: 'NET_30', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+      ]);
 
       await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
@@ -2053,6 +2358,54 @@ describe('enrich_invoice', () => {
       expect(notification.extracted).toEqual(expect.objectContaining({ invoiceDate: '2026-10-10', dueDate: '2026-11-11' }));
       expect(notification.extracted).not.toHaveProperty('dueDateNotApplied');
       expect(notification).not.toHaveProperty('appliedFallbackLabels');
+    });
+
+    it('shows the Workday-resolved payment terms name in the note and Slack when it reads differently', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      const { getDocumentsByWorkdayIds } = require('../lib/database.js');
+      enrichmentResponse.mockResolvedValueOnce({
+        ...ibsEnrichment,
+        extractedPaymentTerms: { name: '30 NET', workdayId: 'NET_30' },
+      });
+      (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValueOnce([
+        { workday_id: 'NET_30', content: 'Payment Terms: Net 30 EOM', metadata: { name: 'Net 30 EOM' } },
+      ]);
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({ paymentTermsId: 'NET_30' }));
+      expect(params.buildNotes([])).toContain('Payment Terms (from document): 30 NET (Workday: Net 30 EOM) (Workday ID: NET_30)');
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.extracted.paymentTerms).toBe('30 NET (Workday: Net 30 EOM)');
+    });
+
+    it('shows a refused discount term in the note and Slack, and updates with no payment terms', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      const { getDocumentsByWorkdayIds } = require('../lib/database.js');
+      enrichmentResponse.mockResolvedValueOnce({
+        ...ibsEnrichment,
+        extractedPaymentTerms: { name: '30 NET', workdayId: 'NET_30' },
+      });
+      (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValueOnce([
+        { workday_id: 'NET_30', content: 'Payment Terms: 3% 30 Net 30', metadata: { name: '3% 30 Net 30' } },
+      ]);
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params.paymentTermsId).toBeUndefined();
+      expect(params.buildNotes([])).toContain(
+        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount) (Workday ID: NET_30)'
+      );
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.extracted.paymentTerms).toBe(
+        '30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
+      );
     });
 
     it('only notes the due date when it annotates the invoice without a supplier to submit', async () => {

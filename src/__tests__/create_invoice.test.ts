@@ -29,6 +29,7 @@ import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, sup
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooFreeRow, mobileKangarooHeader, mobileKangarooRows } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
+import { payrollRechargeHeader, payrollRechargePoLine, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
 
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
@@ -463,6 +464,60 @@ describe('create_invoice', () => {
         }),
       );
       expect(slack.notifyResult.mock.calls[0][3].extracted).not.toHaveProperty('dueDateNotApplied');
+    });
+
+    it('shows the Workday-resolved payment terms name in the note and Slack when it reads differently', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...ibsEnrichmentResult,
+        extractedPaymentTerms: { name: '30 NET', resolvedName: 'Net 30 EOM', workdayId: 'NET_30' },
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs).toMatchObject({ paymentTermsId: 'NET_30' });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Payment Terms (from document): 30 NET (Workday: Net 30 EOM) (Workday ID: NET_30)');
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          extracted: expect.objectContaining({ paymentTerms: '30 NET (Workday: Net 30 EOM)' }),
+        }),
+      );
+    });
+
+    it('shows a refused discount term in the note and Slack, and sends no payment terms', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...ibsEnrichmentResult,
+        extractedPaymentTerms: { name: '30 NET', workdayId: null, rejectedDiscountTerm: '3% 30 Net 30', candidateWorkdayId: 'DISC_30' },
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.paymentTermsId).toBeUndefined();
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(
+        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount) (Workday ID: DISC_30)'
+      );
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          extracted: expect.objectContaining({
+            paymentTerms: '30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)',
+          }),
+        }),
+      );
     });
 
     it('notes a due date removed on retry once, not again under fallback values, and marks it in Slack', async () => {
@@ -1947,6 +2002,215 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('payroll recharge invoice (fictional)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: Array<{ description: string; totalPrice: string | null }>) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: 0,
+        unitCost: 0,
+        extendedAmount: Number(line.totalPrice),
+      })),
+      appliedFallbacks,
+    });
+    const keptMessage = 'Kept "Taxes" $500.00 on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and this reads as payroll or employment tax.';
+
+    it('keeps a Taxes row read as a separate charge on the lines and header tax at $0.00', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: [payrollTaxesCharge],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines.map((line: any) => [line.description, line.extendedAmount])).toEqual([
+        ['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500],
+      ]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(`Amount check: ${keptMessage}`);
+      expect(notes).not.toContain('Added "Taxes"');
+      expect(notes).not.toContain('but the amount due is');
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([keptMessage]);
+      expect(slack.notifyResult.mock.calls[0][3].amountMismatch).toBeUndefined();
+    });
+
+    it('leaves a Taxes row the extractor already read as a line alone, with header tax at $0.00', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeRows,
+        extractedOtherCharges: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-line/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines).toHaveLength(6);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck ?? []).toEqual([]);
+    });
+
+    it('clears a payroll Taxes amount the extractor read straight into the main Tax_Amount field', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedTaxAmount: '$500.00',
+        extractedTaxLabel: 'Taxes',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-main-tax/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines.map((line: any) => [line.description, line.extendedAmount])).toEqual([
+        ['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500],
+      ]);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([keptMessage]);
+    });
+
+    it('moves a payroll charge onto the lines as an ordinary row when a real PO is loaded, not pinned to a tax-specific service line', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-900001',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: payrollRechargePoLine.purchaseOrderLineId, purchaseOrderDocumentNumber: payrollRechargePoLine.purchaseOrderDocumentNumber, quantity: 1, unitCost: 5400, extendedAmount: 5400 }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedPurchaseOrderNumber: 'PO-900001',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: [payrollTaxesCharge],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-po/invoice.pdf')] } as any);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      const taxesCandidate = candidates.find((line: any) => line.description === 'Taxes');
+      expect(taxesCandidate).toBeDefined();
+      expect(taxesCandidate.pinnedPurchaseOrderLineId).toBeUndefined();
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines.map((line: any) => line.description)).toContain('Taxes');
+    });
+
+    it('does not pin a payroll tax charge to a PO service line even when its long printed label matches one', async () => {
+      // Unlike the bare "Taxes" row above, "Employer Payroll Taxes" is long enough to satisfy the service-line
+      // matcher's own length guard, so a PO service line printed with the identical description would otherwise
+      // match it. The exclusion in placeChargesOnPoServiceLines has to stop that, not the matcher's length check.
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-900002',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-900002-1', purchaseOrderDocumentNumber: 'PO-900002', description: 'Employer Payroll Taxes', extendedAmount: 500 }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedPurchaseOrderNumber: 'PO-900002',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: [{ label: 'Employer Payroll Taxes', amount: '$500.00' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-service-line/invoice.pdf')] } as any);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      const taxesCandidate = candidates.find((line: any) => line.description === 'Employer Payroll Taxes');
+      expect(taxesCandidate).toBeDefined();
+      expect(taxesCandidate.pinnedPurchaseOrderLineId).toBeUndefined();
+    });
+
+    it('does not pin a payroll tax charge to a PO service line when a free Wages row signals the recharge', async () => {
+      // The free Wages $0.00 row is dropped from the placed rows, so only the full printed row set still shows
+      // this is a payroll recharge. The exclusion has to classify from that full set, the way placement does.
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const freeWagesRows = [{ ...payrollRechargeSiblingRows[0], totalPrice: '0.00' }, payrollRechargeSiblingRows[1], payrollRechargeSiblingRows[2]];
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-900003',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-900003-1', purchaseOrderDocumentNumber: 'PO-900003', description: 'Taxes Billed Monthly', extendedAmount: 500 }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedAmountDue: '$1,000.00',
+        extractedPurchaseOrderNumber: 'PO-900003',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: freeWagesRows,
+        extractedOtherCharges: [{ label: 'Taxes Billed Monthly', amount: '$500.00' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-free-wages/invoice.pdf')] } as any);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      const taxesCandidate = candidates.find((line: any) => line.description === 'Taxes Billed Monthly');
+      expect(taxesCandidate).toBeDefined();
+      expect(taxesCandidate.pinnedPurchaseOrderLineId).toBeUndefined();
+    });
+
+    it('does not repeat a Taxes row that the extractor returned both as a line and as a charge', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeRows,
+        extractedOtherCharges: [payrollTaxesCharge],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-both/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines).toHaveLength(6);
+    });
+
+    it('still adds an environmental tax row to header tax when no payroll signal is printed', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$5,417.00',
+        extractedTaxAmount: '$0.00',
+        extractedTaxLabel: 'Sales Tax Amount',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: [{ description: 'Catering service', quantity: null, unitCost: null, totalPrice: '5400.00', hasDiscount: null }],
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-envchg-nopayroll/invoice.pdf')] } as any);
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].extractedTaxAmount).toBe('17.00');
+    });
+  });
+
   describe('totals-block charges (SUPIN-470485, SUPIN-467235)', () => {
     const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
     const mergeAsExtracted = (lines: Array<{ description: string; totalPrice: string | null }>) => Promise.resolve({
@@ -2805,6 +3069,18 @@ describe('create_invoice', () => {
       expect(submitArgs.finalLines.some((line: any) => line.extendedAmount < 0)).toBe(false);
       expect(submitArgs.extractedFreightAmount).toBe('2000.00');
       expect(submitArgs.extractedTaxAmount).toBe('2354.16');
+    });
+
+    it('passes the banking-info flag to the new invoice and notes it for AP only when bank details are printed', async () => {
+      const printed = await run(supin472322ProductionRows, { bankingInfoPrinted: true });
+      const printedArgs = printed.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(printedArgs.bankingInfoIncluded).toBe(true);
+      expect(printedArgs.buildNotes([])).toContain('Banking information is printed in the attached documents. Verify it before payment.');
+
+      const absent = await run(supin472322ProductionRows, { bankingInfoPrinted: false });
+      const absentArgs = absent.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(absentArgs).not.toHaveProperty('bankingInfoIncluded');
+      expect(absentArgs.buildNotes([])).not.toContain('Banking information');
     });
 
     it('says $1,388.00 is not carried by any row after a second read finds none, not $3,388.00', async () => {

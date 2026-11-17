@@ -10,6 +10,7 @@ import type { PresignedAttachment } from '../lib/types.js';
 import { supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 import { supin472322Header, supin472322MissedRows, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108DeliveryRow, supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
+import { payrollRechargeHeader, payrollRechargeRows, payrollRechargeSiblingRows } from './fixtures/payroll_recharge.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn(), warn: jest.fn() }));
 
@@ -17,6 +18,9 @@ jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
 
 jest.mock('../lib/database.js', () => ({
   getDatabaseConnection: jest.fn().mockResolvedValue({ query: jest.fn().mockResolvedValue([]) }),
+  getDocumentsByWorkdayIds: jest.fn().mockResolvedValue([
+    { workday_id: 'Immediate', content: 'Payment Terms: Due on receipt', metadata: { name: 'Due on receipt' } },
+  ]),
 }));
 
 jest.mock('../lib/reference_ids.js', () => ({
@@ -79,6 +83,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedRetainage: null,
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: null,
   extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
@@ -133,6 +138,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedPriorPayments: [],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: '',
   extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
@@ -747,6 +753,41 @@ describe('invoice OCR pass', () => {
       });
     });
 
+    describe('payroll recharge missing-row retry (fictional)', () => {
+      const withCells = (rows: typeof payrollRechargeRows) => rows.map(row => ({
+        ...row,
+        unitCost: row.unitCost ?? '',
+        descriptionCells: [] as string[],
+        tableNumber: 1,
+        sectionLabel: '',
+      }));
+      const responseFor = (rows: typeof payrollRechargeRows): InvoiceOcrResponse => ({
+        ...ocrResponse,
+        extractedAmountDue: payrollRechargeHeader.extractedAmountDue,
+        extractedTaxAmount: payrollRechargeHeader.extractedTaxAmount,
+        extractedTaxLabel: payrollRechargeHeader.extractedTaxLabel,
+        extractedOtherCharges: [],
+        extractedSummaryCharges: [],
+        extractedLineSubtotal: { label: '', amount: '' },
+        extractedPartialPayment: { label: '', percent: '', amount: '' },
+        extractedPriorPayments: [],
+        extractedInvoiceLines: withCells(rows),
+      });
+
+      it('accepts a second read that recovers a payroll Taxes row the first read missed, instead of rejecting it as not a line', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(payrollRechargeSiblingRows))
+          .mockResolvedValueOnce(responseFor(payrollRechargeRows));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+        expect(result?.extractedInvoiceLines).toHaveLength(6);
+        expect(result?.extractedRowsAddedOnSecondRead).toEqual([{ description: 'Taxes', totalPrice: '500.00' }]);
+        expect(result?.extractedSecondReadOutcome).toBeNull();
+      });
+    });
+
     describe('freight inside the printed subtotal and an unlined discount (SUPIN-472322)', () => {
       const withCells = (rows: typeof supin472322Rows) => rows.map(row => ({ ...row, descriptionCells: [] as string[] }));
       const responseFor = (rows: typeof supin472322Rows, overrides: Partial<InvoiceOcrResponse> = {}): InvoiceOcrResponse => ({
@@ -841,6 +882,16 @@ describe('invoice OCR pass', () => {
         const result = await extractInvoiceDocuments([pdf]);
 
         expect(result?.extractedSecondReadOutcome).toBeNull();
+      });
+
+      it('keeps the banking-info flag when only the second read saw the bank details', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows, { bankingInfoPrinted: false }))
+          .mockResolvedValueOnce(responseFor(supin472322Rows, { bankingInfoPrinted: true }));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.bankingInfoPrinted).toBe(true);
       });
 
       it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
@@ -1111,6 +1162,7 @@ describe('invoice OCR pass', () => {
         extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
         extractedPurchaseOrderNumber: 'PO-414007',
         extractedAccountNumber: 'AC-1033562',
+        bankingInfoPrinted: true,
         extractedServicePeriod: 'Sept 28 - Oct 2',
         invoiceLineQuantityDisplayed: true,
         extractedInvoiceLines: ocrResult.extractedInvoiceLines,
@@ -1122,6 +1174,18 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment({ ...matchingResult, extractedPaymentTerms: null }, ocrResult).extractedPaymentTerms)
         .toEqual({ name: 'Due on receipt', workdayId: null });
       expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, extractedPaymentTerms: null }).extractedPaymentTerms).toBeNull();
+    });
+
+    it('carries the banking-info flag from the document read and leaves it null when none ran', () => {
+      expect(mergeInvoiceEnrichment(matchingResult, ocrResult).bankingInfoPrinted).toBe(true);
+      expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).bankingInfoPrinted).toBeNull();
+    });
+
+    it('asks the document read for a banking-info flag without copying the bank numbers', () => {
+      expect(invoiceOcrPrompt).toContain('bankingInfoPrinted');
+      expect(invoiceOcrPrompt).toContain('Do not copy any bank number');
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
     });
 
     it('leaves document fields empty when no document was read', () => {
@@ -1189,11 +1253,27 @@ describe('invoice OCR pass', () => {
       ['2026-11-11-08:00', null],
       ['11/11-26', null],
       ['05.11.2026', null],
+      ['11.10.26', null],
       ['Mayday 11 2026', null],
       ['Novemberish 11, 2026', null],
       ['Nov 11, 26', null],
     ])('normalizes the printed date %s to %s', (printed, expected) => {
       expect(normalizePrintedDate(printed)).toBe(expected);
+    });
+
+    it.each([
+      ['11.10.26', '2026-11-10'],
+      ['11.10.2026', '2026-11-10'],
+      ['1.5.26', '2026-01-05'],
+      ['05.11.2026', '2026-05-11'],
+      ['11/10/2026', '2026-11-10'],
+      ['11-10-26', '2026-11-10'],
+      ['11.11-26', null],
+      ['13.01.26', null],
+      ['2.30.26', null],
+      ['2026.11.10', null],
+    ])('reads the printed date %s as %s when dotted dates are allowed', (printed, expected) => {
+      expect(normalizePrintedDate(printed, { dottedDates: true })).toBe(expected);
     });
 
     it('asks for an explicitly printed due date only, with the IBS example', () => {
@@ -1213,6 +1293,14 @@ describe('invoice OCR pass', () => {
       expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }]');
       expect(invoiceOcrPrompt).toContain('fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them');
       expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
+    });
+
+    it('keeps a payroll Taxes row on the lines with a fictional example', () => {
+      expect(invoiceOcrPrompt).toContain('Header tax is only sales and use tax.');
+      expect(invoiceOcrPrompt).toContain('is employer payroll tax, a billed charge');
+      expect(invoiceOcrPrompt).toContain('Wages $4,000.00, 401K $200.00, Benefits $300.00, Medical $250.00, Workers Comp $150.00, and Taxes $500.00');
+      expect(invoiceOcrPrompt).toContain('must return all six rows in extractedInvoiceLines, extractedTaxAmount "$0.00", extractedTaxLabel "Sales Tax Amount", and extractedOtherCharges []');
+      expect(invoiceOcrPrompt).toContain('The exception is employer payroll tax');
     });
   });
 
@@ -1284,7 +1372,10 @@ describe('invoice OCR pass', () => {
       expect(matchingContent[0].text).toContain('Matching Workday purchase order PO-414007');
       expect(matchingContent[0].text).toContain('Subject: Invoice 401');
 
-      expect(result).toEqual(mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)));
+      expect(result).toEqual({
+        ...mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)),
+        extractedPaymentTerms: { name: 'Due on receipt', workdayId: 'Immediate', resolvedName: 'Due on receipt' },
+      });
     });
 
     it('throws when OCR fails and never calls the matching model', async () => {

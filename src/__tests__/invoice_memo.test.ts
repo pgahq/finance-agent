@@ -1,4 +1,5 @@
 import {
+  abbreviateMemoDescription,
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
   formatMemoServiceDates,
@@ -12,6 +13,50 @@ import {
 } from '../lib/invoice_memo.js';
 import { formatMemoIdentifierNotes } from '../lib/invoice_enrichment.js';
 import type { FinalInvoiceLine } from '../lib/invoice_lines.js';
+
+describe('memo abbreviations', () => {
+  it('shortens black and white to b/w, whatever the case or hyphenation', () => {
+    expect(abbreviateMemoDescription('black and white copies')).toBe('b/w copies');
+    expect(abbreviateMemoDescription('Black And White prints')).toBe('b/w prints');
+    expect(abbreviateMemoDescription('black-and-white flyers and color flyers')).toBe('b/w flyers and color flyers');
+  });
+
+  it('shortens the "&" spelling too, since invoices print both forms', () => {
+    expect(abbreviateMemoDescription('black & white copies')).toBe('b/w copies');
+    expect(abbreviateMemoDescription('Black&White prints')).toBe('b/w prints');
+    expect(abbreviateMemoDescription('B&W copies')).toBe('b/w copies');
+    expect(abbreviateMemoDescription('b & w prints')).toBe('b/w prints');
+  });
+
+  it('leaves other text alone', () => {
+    expect(abbreviateMemoDescription('black and whitewash supplies')).toBe('black and whitewash supplies');
+    expect(abbreviateMemoDescription('black paint and white paint')).toBe('black paint and white paint');
+  });
+
+  it('keeps the slash through memo sanitizing, with and without identifiers', () => {
+    expect(composeInvoiceMemo({ description: 'Black and white copies' })).toBe('b/w copies');
+    expect(composeInvoiceMemo({
+      accountNumber: '1033562',
+      po: 'PO-414498',
+      description: 'Black and white copies',
+    })).toBe('Acct 1033562 PO-414498 b/w copies');
+  });
+
+  it('abbreviates the "&" spelling before sanitizing strips the ampersand to a space', () => {
+    // sanitizeMemoText replaces "&" with a space; abbreviation must see the raw "&" first, or this would
+    // come out as the confusing "b w copies" / "black white copies" instead of "b/w copies".
+    expect(composeInvoiceMemo({ description: 'B&W copies' })).toBe('b/w copies');
+    expect(composeInvoiceMemo({ description: 'black & white copies' })).toBe('b/w copies');
+  });
+
+  it('lets a long description fit that would be dropped unabbreviated', () => {
+    const filler = 'x'.repeat(INVOICE_MEMO_MAX_LENGTH - 'Acct 1033562 '.length - ' b/w'.length);
+    const long = composeInvoiceMemo({ accountNumber: '1033562', description: `${filler} black and white` });
+    expect(long).toBe(`Acct 1033562 ${filler} b/w`);
+    expect(long?.length).toBeLessThanOrEqual(INVOICE_MEMO_MAX_LENGTH);
+    expect(composeInvoiceMemo({ accountNumber: '1033562', description: `${filler} black and white and more` })).toBe('Acct 1033562');
+  });
+});
 
 describe('composeInvoiceMemo', () => {
   it('returns undefined when nothing is present', () => {
