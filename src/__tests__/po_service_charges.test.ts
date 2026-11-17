@@ -91,6 +91,15 @@ describe('uniqueServiceLineMatches', () => {
     const consumed = poLines.map(line => (line.purchaseOrderLineId === DELIVERY_LINE ? { ...line, availableForInvoicing: false } : line));
     expect(uniqueServiceLineMatches(['DELIVERY CHARGE'], consumed).size).toBe(0);
   });
+
+  it('never matches a bare payroll-tax label to a PO service line, even one with the identical description', () => {
+    // A payroll-tax row stays an ordinary line, never pinned to a service line (see placePayrollTaxCharges). The
+    // 6-character minimum on both sides already guarantees this for "Taxes" (5) and "FICA" (4): even a quantity-
+    // zero PO service line printed with the exact same label is too short on both sides to ever match.
+    const payrollTaxServiceLine = { ...poLines[3], purchaseOrderLineId: 'ORDER_SERVICE_LINE-TAX-99999', description: 'Taxes', quantity: undefined };
+    expect(uniqueServiceLineMatches(['Taxes'], [payrollTaxServiceLine]).size).toBe(0);
+    expect(uniqueServiceLineMatches(['FICA'], [{ ...payrollTaxServiceLine, description: 'FICA' }]).size).toBe(0);
+  });
 });
 
 describe('placeChargesOnPoServiceLines', () => {

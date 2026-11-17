@@ -273,8 +273,16 @@ export function placePayrollTaxCharges(input: {
   tax?: string | null;
   taxLabel?: string | null;
   poLines?: PayrollTaxContext['poLines'];
+  /**
+   * The full printed rows, before the caller drops a free ($0.00) row or one with no parseable amount. A
+   * category row can be free (`Wages $0.00`, a pay period with no overtime) or otherwise unpriced and still be
+   * the signal that makes an invoice a payroll recharge; dropping it from classification, not just from the
+   * rows that become lines, could misclassify its sibling `Taxes` row as header tax. Defaults to `lines` when
+   * the caller has no broader row set (classification and line placement see the same rows either way).
+   */
+  classificationLines?: PayrollTaxContext['lines'];
 }): PlacedPayrollTaxCharges {
-  const context: PayrollTaxContext = { lines: input.lines, poLines: input.poLines };
+  const context: PayrollTaxContext = { lines: input.classificationLines ?? input.lines, poLines: input.poLines };
   // Signed cents, so a credit line never looks like it already covers a positive payroll charge of the same size.
   const knownAmounts: Array<{ tokens: Set<string>; cents: number }> = input.lines.map(line => ({
     tokens: lineLabelTokenSet(line),

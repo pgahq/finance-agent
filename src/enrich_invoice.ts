@@ -343,6 +343,9 @@ async function processInvoice(
     // Payroll or employment tax is not sales or use tax, so it stays an invoice line instead of joining header tax.
     const payrollTaxCharges = placePayrollTaxCharges({
       lines: extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost)),
+      // Classify from every printed row, including one removeFreeRows or the amount filter above dropped: a
+      // free or unpriced payroll category (`Wages $0.00`) still signals a payroll recharge for its Taxes row.
+      classificationLines: result.extractedInvoiceLines ?? [],
       otherCharges: result.extractedOtherCharges,
       tax: result.extractedTaxAmount,
       taxLabel: result.extractedTaxLabel,

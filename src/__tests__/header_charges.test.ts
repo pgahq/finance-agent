@@ -924,10 +924,50 @@ describe('payroll tax is not header tax', () => {
       // A core tax word alongside the acronym still reads as the tax, fee word or not.
       expect(isPayrollTaxCharge('FICA Tax Processing Fee', {})).toBe(true);
     });
+
+    it('resolves mixed payroll- and transaction-tax-worded labels the same way on any invoice', () => {
+      // A payroll qualifier (payroll, employer, employers, employment, unemployment) paired with a core tax
+      // word always wins over a transaction-tax qualifier also present in the label, the same way the
+      // "State Unemployment Tax" case above does ("unemployment" wins over "state").
+      expect(isPayrollTaxCharge('County Employer Tax', {})).toBe(true);
+      expect(isPayrollTaxCharge('Local Payroll Tax', {})).toBe(true);
+      // An acronym paired with a fee word and no core tax word is still a fee, whatever else qualifies it.
+      expect(isPayrollTaxCharge('State FICA Fee', siblingContext)).toBe(false);
+    });
   });
 
   describe('placePayrollTaxCharges', () => {
     const base = { lines: payrollRechargeSiblingRows, tax: payrollRechargeHeader.extractedTaxAmount, taxLabel: payrollRechargeHeader.extractedTaxLabel };
+
+    it('classifies from the full printed row set, so a free wages row still signals a payroll recharge', () => {
+      // "Wages $0.00" is dropped from the rows that become lines (it bills nothing), but it is still the
+      // printed signal that makes this a payroll recharge; without classificationLines, only "Benefits" and
+      // "Medical" would be left (not wages or workers comp), and the bare "Taxes" row would stay header tax.
+      const freeWagesRow = { description: 'Wages', quantity: null, unitCost: null, totalPrice: '0.00', hasDiscount: null };
+      const otherRows = [
+        { description: 'Benefits', quantity: null, unitCost: null, totalPrice: '300.00', hasDiscount: null },
+        { description: 'Medical', quantity: null, unitCost: null, totalPrice: '250.00', hasDiscount: null },
+      ];
+      const placed = placePayrollTaxCharges({
+        lines: otherRows,
+        classificationLines: [freeWagesRow, ...otherRows],
+        otherCharges: [payrollTaxesCharge],
+      });
+
+      expect(placed.addedLines).toBe(1);
+      expect(placed.lines.at(-1)).toEqual({ description: 'Taxes', quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null });
+    });
+
+    it('falls back to the placement lines for classification when no broader row set is given', () => {
+      const otherRows = [
+        { description: 'Benefits', quantity: null, unitCost: null, totalPrice: '300.00', hasDiscount: null },
+        { description: 'Medical', quantity: null, unitCost: null, totalPrice: '250.00', hasDiscount: null },
+      ];
+      const placed = placePayrollTaxCharges({ lines: otherRows, otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.addedLines).toBe(0);
+      expect(placed.otherCharges).toEqual([payrollTaxesCharge]);
+    });
 
     it('moves a Taxes row read as a separate charge onto the lines', () => {
       const placed = placePayrollTaxCharges({ ...base, otherCharges: [payrollTaxesCharge] });
