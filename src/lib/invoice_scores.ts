@@ -6,6 +6,7 @@ import {
   type CancelAttribution,
   type CancelBasis,
   type CancelEvidence,
+  type JevShadow,
   type InvoiceStatusRow,
   type Outcome,
   type ScoredChange,
@@ -31,6 +32,8 @@ export interface InvoiceScore {
   cancelAttribution?: CancelAttribution;
   cancelBasis?: CancelBasis;
   cancelEvidence?: CancelEvidence;
+  /** Jev's verdicts stored beside the official score; absent when Jev was off, failed, or the invoice predates it. */
+  jevShadow?: JevShadow;
   holdReason?: string;
   releaseSha?: string;
   clusteringMode?: string;
@@ -85,6 +88,7 @@ export function rowToInvoiceScore(row: Record<string, unknown>): InvoiceScore {
     cancelAttribution: oneOf(CANCEL_ATTRIBUTIONS, row.cancel_attribution),
     cancelBasis: oneOf(CANCEL_BASES, row.cancel_basis),
     cancelEvidence: parseJson<CancelEvidence>(row.cancel_evidence),
+    jevShadow: parseJson<JevShadow>(row.jev_shadow),
     holdReason: optionalString(row.hold_reason),
     releaseSha: optionalString(row.release_sha),
     clusteringMode: optionalString(row.clustering_mode),
@@ -106,8 +110,8 @@ export async function upsertInvoiceScore(db: DatabaseConnection, score: InvoiceS
     `INSERT INTO agent_invoice_scores
        (workday_invoice_wid, workday_invoice_number, origin, conversation_id, entry_status, entry_read_at,
         entry_fields, entry_diff, final_status, final_read_at, late_diff, outcome, cancel_reason,
-        cancel_attribution, cancel_basis, cancel_evidence, hold_reason, release_sha, clustering_mode, terminal, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, CURRENT_TIMESTAMP)
+        cancel_attribution, cancel_basis, cancel_evidence, hold_reason, release_sha, clustering_mode, terminal, jev_shadow, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, CURRENT_TIMESTAMP)
      ON CONFLICT (workday_invoice_wid) DO UPDATE SET
        workday_invoice_number = EXCLUDED.workday_invoice_number,
        origin = EXCLUDED.origin,
@@ -128,6 +132,7 @@ export async function upsertInvoiceScore(db: DatabaseConnection, score: InvoiceS
        release_sha = EXCLUDED.release_sha,
        clustering_mode = EXCLUDED.clustering_mode,
        terminal = EXCLUDED.terminal,
+       jev_shadow = EXCLUDED.jev_shadow,
        updated_at = CURRENT_TIMESTAMP
      WHERE agent_invoice_scores.terminal = false`,
     [
@@ -151,6 +156,7 @@ export async function upsertInvoiceScore(db: DatabaseConnection, score: InvoiceS
       score.releaseSha ?? null,
       score.clusteringMode ?? null,
       score.terminal,
+      json(score.jevShadow),
     ]
   );
 }

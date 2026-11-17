@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import type { DatabaseConnection } from './database.js';
 import { asArray, extractLineOfBusinessId } from './related_worktags.js';
 import { getSupplierInvoice, type WorkdayConfig } from './workday.js';
+import { jevDecide, jevMinConfidence, type JevChoiceQuestion } from './jev.js';
 
 export const SNAPSHOT_SOURCES = ['create', 'resend_update', 'enrich', 'enrich_baseline'] as const;
 export type SnapshotSource = typeof SNAPSHOT_SOURCES[number];
@@ -266,8 +267,14 @@ function pairLines(before: ScoredLine[], after: ScoredLine[]): { pairs: Array<[n
   };
 }
 
-/** Field-level changes from one read of the scored fields to a later one. */
-export function diffScoredFields(before: ScoredFields, after: ScoredFields): FieldChange[] {
+interface LinePairing {
+  pairs: Array<[number, number]>;
+  removed: number[];
+  added: number[];
+}
+
+/** Field-level changes between two reads once the lines have been paired. */
+function diffWithPairing(before: ScoredFields, after: ScoredFields, { pairs, removed, added }: LinePairing): FieldChange[] {
   const changes: FieldChange[] = [];
   for (const field of HEADER_FIELDS) {
     if (!sameValue(before[field], after[field])) {
@@ -277,7 +284,6 @@ export function diffScoredFields(before: ScoredFields, after: ScoredFields): Fie
 
   const beforeLines = before.lines ?? [];
   const afterLines = after.lines ?? [];
-  const { pairs, removed, added } = pairLines(beforeLines, afterLines);
   for (const [b, a] of pairs) {
     for (const field of LINE_FIELDS) {
       const left = beforeLines[b][field];
@@ -294,6 +300,96 @@ export function diffScoredFields(before: ScoredFields, after: ScoredFields): Fie
     changes.push({ field: 'line.added', line: index, after: afterLines[index] });
   }
   return changes;
+}
+
+/** Field-level changes from one read of the scored fields to a later one. */
+export function diffScoredFields(before: ScoredFields, after: ScoredFields): FieldChange[] {
+  return diffWithPairing(before, after, pairLines(before.lines ?? [], after.lines ?? []));
+}
+
+/** Leftover lines past this many on either side are paired by the rules: Jev takes at most 255 options. */
+const MAX_JEV_LEFTOVER_LINES = 50;
+const REMOVED_OPTION = 'removed';
+
+function describeLine(line: ScoredLine): string {
+  const parts = Object.entries({
+    amount: line.amount,
+    purchaseOrderLine: line.purchaseOrderLine,
+    spendCategory: line.spendCategory,
+    costCenter: line.costCenter,
+    fund: line.fund,
+    lineOfBusiness: line.lineOfBusiness,
+    memo: line.memo,
+    itemDescription: line.itemDescription,
+  }).filter(([, value]) => value !== undefined && value !== '');
+  return parts.map(([key, value]) => `${key}: ${String(value).slice(0, 200)}`).join('; ') || 'empty line';
+}
+
+/**
+ * Like `diffScoredFields`, but Jev pairs the lines that the exact pass (same position and amount) leaves over, so a
+ * line AP re-amounted, split, or reordered is matched to its counterpart rather than by amount or position. Any line
+ * Jev cannot place confidently, or any Jev failure, is paired by the same rules as `diffScoredFields`.
+ */
+export async function diffScoredFieldsWithJev(before: ScoredFields, after: ScoredFields, env: NodeJS.ProcessEnv = process.env): Promise<FieldChange[]> {
+  const beforeLines = before.lines ?? [];
+  const afterLines = after.lines ?? [];
+  const rulePairing = pairLines(beforeLines, afterLines);
+
+  const exact: Array<[number, number]> = [];
+  for (let i = 0; i < Math.min(beforeLines.length, afterLines.length); i++) {
+    if (beforeLines[i].amount === afterLines[i].amount) exact.push([i, i]);
+  }
+  const takenBefore = new Set(exact.map(([b]) => b));
+  const takenAfter = new Set(exact.map(([, a]) => a));
+  const leftBefore = beforeLines.map((_, index) => index).filter((index) => !takenBefore.has(index));
+  const leftAfter = afterLines.map((_, index) => index).filter((index) => !takenAfter.has(index));
+  if (!leftBefore.length || !leftAfter.length || leftBefore.length > MAX_JEV_LEFTOVER_LINES || leftAfter.length > MAX_JEV_LEFTOVER_LINES) {
+    return diffWithPairing(before, after, rulePairing);
+  }
+
+  const criteria: Record<string, string> = { [REMOVED_OPTION]: 'AP deleted this line; no later line replaces it' };
+  for (const a of leftAfter) criteria[`line${a}`] = describeLine(afterLines[a]);
+  const questions: Record<string, JevChoiceQuestion> = {};
+  for (const b of leftBefore) {
+    questions[`line${b}`] = {
+      type: 'choice',
+      instructions: `Which later invoice line is the same line as this earlier line: ${describeLine(beforeLines[b])}? Pick ${REMOVED_OPTION} if AP deleted it.`,
+      criteria,
+    };
+  }
+  const answers = await jevDecide({ supplier: before.supplier ?? after.supplier ?? null }, questions, env);
+  if (!answers) return diffWithPairing(before, after, rulePairing);
+
+  const minConfidence = jevMinConfidence(env);
+  const pairs = [...exact];
+  const confident = leftBefore
+    .map((b) => ({ b, answer: answers.choices[`line${b}`] }))
+    .filter(({ answer }) => answer && answer.confidence >= minConfidence)
+    .sort((x, y) => y.answer.confidence - x.answer.confidence);
+  const removed = new Set<number>();
+  const usedBefore = new Set<number>(takenBefore);
+  const usedAfter = new Set<number>(takenAfter);
+  for (const { b, answer } of confident) {
+    if (answer.choice === REMOVED_OPTION) {
+      removed.add(b);
+      usedBefore.add(b);
+      continue;
+    }
+    const a = Number(answer.choice.slice('line'.length));
+    if (!Number.isInteger(a) || usedAfter.has(a) || !leftAfter.includes(a)) continue;
+    pairs.push([b, a]);
+    usedBefore.add(b);
+    usedAfter.add(a);
+  }
+  const restBefore = leftBefore.filter((b) => !usedBefore.has(b));
+  const restAfter = leftAfter.filter((a) => !usedAfter.has(a));
+  const positional = Math.min(restBefore.length, restAfter.length);
+  for (let i = 0; i < positional; i++) pairs.push([restBefore[i], restAfter[i]]);
+  return diffWithPairing(before, after, {
+    pairs: pairs.sort((x, y) => x[1] - y[1]),
+    removed: [...removed, ...restBefore.slice(positional)].sort((x, y) => x - y),
+    added: restAfter.slice(positional),
+  });
 }
 
 function parseJson<T>(value: unknown): T | undefined {

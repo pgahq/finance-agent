@@ -24,6 +24,11 @@ jest.mock('../lib/invoice_scores.js', () => ({
   findOtherAgentInvoicesWithSameNumber: jest.fn(),
   isAgentWrittenInvoice: jest.fn(),
 }));
+jest.mock('../lib/jev_audit.js', () => ({
+  jevAttributeCancel: jest.fn(),
+  jevScoredChanges: jest.fn(),
+  jevSupplierVoidOrCredit: jest.fn(),
+}));
 jest.mock('../lib/invoice_snapshots.js', () => ({
   ...jest.requireActual('../lib/invoice_snapshots.js'),
   getAgentInvoiceSnapshots: jest.fn(),
@@ -39,6 +44,8 @@ import * as scores from '../lib/invoice_scores.js';
 import * as snapshots from '../lib/invoice_snapshots.js';
 import type { AgentInvoiceSnapshot, ScoredFields } from '../lib/invoice_snapshots.js';
 import * as intercom from '../lib/intercom.js';
+import * as jevAudit from '../lib/jev_audit.js';
+import type { ScoredChange } from '../lib/invoice_score.js';
 import * as workday from '../lib/workday.js';
 import { handler, needsScoring, selectInvoicesToScore } from '../score_invoices.js';
 import { scoreInvoice } from '../score_invoices_processor.js';
@@ -411,5 +418,125 @@ describe('selecting invoices to score', () => {
     expect(dispatched).toHaveLength(25);
     expect(scores.listPendingScoreInvoices).toHaveBeenCalledWith(expect.anything(), 50);
     delete process.env.SCORE_MAX_INVOICES_PER_RUN;
+  });
+});
+
+describe('scoreInvoice with Jev', () => {
+  afterEach(() => {
+    process.env.JEV_AUDIT_MODE = 'off';
+  });
+
+  const jevCancel = jevAudit.jevAttributeCancel as jest.Mock;
+  const jevChanges = jevAudit.jevScoredChanges as jest.Mock;
+  const jevVoid = jevAudit.jevSupplierVoidOrCredit as jest.Mock;
+  const canceled = () => status('Canceled', { isCanceled: true });
+  const costCenterChange = (category: ScoredChange['category']): ScoredChange => ({
+    field: 'line.costCenter', line: 0, before: 'Cost_Center_Reference_ID=CC1', after: 'Cost_Center_Reference_ID=CC9', category, agentOwned: true,
+  });
+
+  it('never calls Jev when the mode is off', async () => {
+    process.env.JEV_AUDIT_MODE = 'off';
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue(invoice({ costCenter: 'CC9' }));
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('In Progress') }, now);
+    await scoreInvoice(context, { workdayInvoiceWid: wid, status: canceled() }, now);
+    expect(jevChanges).not.toHaveBeenCalled();
+    expect(jevCancel).not.toHaveBeenCalled();
+    expect(jevVoid).not.toHaveBeenCalled();
+    expect(score?.jevShadow).toBeUndefined();
+  });
+
+  it('in shadow mode stores Jev\'s entry verdict but keeps the rule diff and outcome official', async () => {
+    process.env.JEV_AUDIT_MODE = 'shadow';
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue(invoice({ costCenter: 'CC9' }));
+    jevChanges.mockResolvedValue([costCenterChange('convention')]);
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('In Progress') }, now);
+    expect(score?.outcome).toBe('submitted_edited');
+    expect(score?.entryDiff?.map((change) => change.category)).toEqual(['material']);
+    expect(score?.jevShadow).toEqual(expect.objectContaining({
+      entryOutcome: 'submitted_clean',
+      entryDiff: [expect.objectContaining({ category: 'convention' })],
+    }));
+    expect(scores.upsertInvoiceScore).toHaveBeenCalledWith(context.dbConnection, score);
+  });
+
+  it('in on mode makes Jev\'s entry diff and outcome the official ones', async () => {
+    process.env.JEV_AUDIT_MODE = 'on';
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue(invoice({ costCenter: 'CC9' }));
+    jevChanges.mockResolvedValue([costCenterChange('convention')]);
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('In Progress') }, now);
+    expect(score?.outcome).toBe('submitted_clean');
+    expect(score?.entryDiff?.map((change) => change.category)).toEqual(['convention']);
+  });
+
+  it('keeps the rule score and stores no verdict when Jev cannot answer or throws', async () => {
+    process.env.JEV_AUDIT_MODE = 'on';
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue(invoice({ costCenter: 'CC9' }));
+    jevChanges.mockResolvedValueOnce(undefined);
+    const unanswered = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('In Progress') }, now);
+    expect(unanswered?.outcome).toBe('submitted_edited');
+    expect(unanswered?.jevShadow).toBeUndefined();
+
+    jevChanges.mockRejectedValueOnce(new Error('boom'));
+    const thrown = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('In Progress') }, now);
+    expect(thrown?.outcome).toBe('submitted_edited');
+    expect(thrown?.entryDiff?.[0].category).toBe('material');
+  });
+
+  it('records a late Jev diff in shadow mode against the entry read', async () => {
+    process.env.JEV_AUDIT_MODE = 'shadow';
+    (scores.getInvoiceScore as jest.Mock).mockResolvedValue({
+      workdayInvoiceWid: wid, terminal: false, entryReadAt: new Date('2026-10-09T13:00:00Z'), entryFields: fieldsOf(invoice()), outcome: 'submitted_clean', entryDiff: [],
+    });
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue(invoice({ costCenter: 'CC7' }));
+    jevChanges.mockResolvedValue([costCenterChange('convention')]);
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Approved') }, now);
+    expect(score?.lateDiff?.map((change) => change.category)).toEqual(['material']);
+    expect(score?.jevShadow?.lateDiff?.map((change) => change.category)).toEqual(['convention']);
+  });
+
+  it('stores Jev\'s cancel attribution beside the rule one in shadow mode, and uses it in on mode', async () => {
+    jevCancel.mockResolvedValue({ result: { attribution: 'business', basis: 'jev' }, confidence: 0.9 });
+    process.env.JEV_AUDIT_MODE = 'shadow';
+    const shadow = await scoreInvoice(context, { workdayInvoiceWid: wid, status: canceled() }, now);
+    expect(shadow).toEqual(expect.objectContaining({ cancelAttribution: 'unattributed' }));
+    expect(shadow?.jevShadow?.cancel).toEqual({ attribution: 'business', basis: 'jev', confidence: 0.9 });
+
+    process.env.JEV_AUDIT_MODE = 'on';
+    const on = await scoreInvoice(context, { workdayInvoiceWid: wid, status: canceled() }, now);
+    expect(on).toEqual(expect.objectContaining({ cancelAttribution: 'business', cancelBasis: 'jev' }));
+  });
+
+  it('judges supplier messages with Jev: the pattern stays official in shadow, Jev decides in on mode', async () => {
+    process.env.INTERCOM_ACCESS_TOKEN = 'token';
+    (intercom.fetchConversationMessages as jest.Mock).mockResolvedValue([
+      { createdAt: Math.floor(now.getTime() / 1000), body: 'Ignore that one, we sent it by mistake', authorType: 'user', partType: 'comment' },
+    ]);
+    jevVoid.mockResolvedValue({ voided: true, probability: 0.97 });
+    jevCancel.mockImplementation(async (evidence: { supplierVoidOrCreditInThread?: boolean }, rule: unknown) => ({
+      result: evidence.supplierVoidOrCreditInThread ? { attribution: 'business', basis: 'supplier_void_or_credit' } : rule,
+    }));
+
+    process.env.JEV_AUDIT_MODE = 'shadow';
+    const shadow = await scoreInvoice(context, { workdayInvoiceWid: wid, status: canceled() }, now);
+    expect(shadow?.cancelEvidence?.supplierVoidOrCreditInThread).toBe(false);
+    expect(shadow?.cancelAttribution).toBe('unattributed');
+    expect(shadow?.jevShadow?.supplierVoidOrCredit).toEqual({ jev: true, probability: 0.97, rule: false });
+    expect(shadow?.jevShadow?.cancel?.attribution).toBe('business');
+
+    process.env.JEV_AUDIT_MODE = 'on';
+    const on = await scoreInvoice(context, { workdayInvoiceWid: wid, status: canceled() }, now);
+    expect(on?.cancelEvidence?.supplierVoidOrCreditInThread).toBe(true);
+    expect(on).toEqual(expect.objectContaining({ cancelAttribution: 'business', cancelBasis: 'supplier_void_or_credit' }));
+  });
+
+  it('does not ask Jev again about a stored verdict by overwriting it with nothing', async () => {
+    process.env.JEV_AUDIT_MODE = 'shadow';
+    const stored = { model: 'typesafe-ai/jev-1.14.0', entryOutcome: 'submitted_clean' as const };
+    (scores.getInvoiceScore as jest.Mock).mockResolvedValue({
+      workdayInvoiceWid: wid, terminal: false, entryReadAt: new Date('2026-10-09T13:00:00Z'), entryFields: fieldsOf(invoice()), outcome: 'submitted_clean', entryDiff: [], jevShadow: stored,
+    });
+    jevChanges.mockResolvedValue(undefined);
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Approved') }, now);
+    expect(score?.jevShadow).toEqual(expect.objectContaining(stored));
   });
 });

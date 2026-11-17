@@ -3,6 +3,8 @@ import type { DatabaseConnection } from './lib/database.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
+import { jevMode } from './lib/jev.js';
+import { buildJevReplyBlocks, jevScoreView } from './lib/jev_digest.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
 import {
   addCentralDays,
@@ -11,6 +13,7 @@ import {
   touchCalloutBlocks,
   touchPeriod,
   weeklyTouchTrend,
+  type TouchCallout,
 } from './lib/score_touches.js';
 import { refreshTouchDaily } from './lib/touch_reporting.js';
 import { AGENT_MODIFIED_TAG_REF_ID, loadWeeklyCoverage, refreshCoverageDaily } from './lib/invoice_coverage.js';
@@ -112,6 +115,53 @@ export async function loadEnteredScores(db: DatabaseConnection, since: Date): Pr
 export const DAILY_TREND_DAYS = 14;
 export const WEEKLY_TREND_WEEKS = 8;
 
+function dailyCallout(scores: InvoiceScore[], today: Date, now: Date): TouchCallout {
+  return {
+    periodName: 'today',
+    previousName: 'yesterday',
+    current: touchPeriod(scores, 'today', today, addCentralDays(today, 1)),
+    previous: touchPeriod(scores, 'yesterday', addCentralDays(today, -1), today),
+    trend: dailyTouchTrend(scores, now, DAILY_TREND_DAYS),
+  };
+}
+
+function weeklyCallout(scores: InvoiceScore[], window: DigestWindow): TouchCallout {
+  return {
+    periodName: 'last week',
+    previousName: 'the week before',
+    current: touchPeriod(scores, 'last week', window.start, window.end),
+    previous: touchPeriod(scores, 'the week before', window.previousStart, window.start),
+    trend: weeklyTouchTrend(scores, window.end, WEEKLY_TREND_WEEKS),
+  };
+}
+
+/**
+ * While Jev runs in shadow, one thread reply under the post: the Jev-scored touch lead (drawn by the same chart
+ * code) and how Jev and the rules differ. The post stays the official score, so a failure here is logged and never
+ * fails the run.
+ */
+async function postJevReply(
+  threadTs: string | undefined,
+  callouts: { rule: TouchCallout; jev: TouchCallout },
+  scores: InvoiceScore[]
+): Promise<void> {
+  if (jevMode() !== 'shadow' || !threadTs) return;
+  if (!scores.some((score) => score.jevShadow)) {
+    debug('No scored invoice in this audit carries a Jev verdict; skipping the Jev reply');
+    return;
+  }
+  try {
+    await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
+    const reply = await postAudit(
+      buildJevReplyBlocks({ ruleCallout: callouts.rule, jevCallout: callouts.jev, scores }),
+      threadTs
+    );
+    if (!reply.ok) debug('Could not post the Jev reply under the audit post', { error: reply.error });
+  } catch (error) {
+    debug('Could not post the Jev reply under the audit post', error);
+  }
+}
+
 async function postAudit(blocks: SlackBlock[], threadTs?: string): Promise<SlackChannelPostResult> {
   return postSlackChannelMessage(blocks, {
     token: process.env.AUDIT_SLACK_BOT_TOKEN,
@@ -154,20 +204,16 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
   const lastPosted = await lastPostedThrough(db, 'daily');
   const floor = addCentralDays(today, -MAX_DAILY_CATCH_UP_DAYS);
   const since = !lastPosted ? today : lastPosted > floor ? lastPosted : floor;
-  const summary = summarizeDay(await loadDigestScores(db, since), since, now);
+  const scored = await loadDigestScores(db, since);
+  const summary = summarizeDay(scored, since, now);
   if (!summary.lines.length && !summary.lostToRefresh) {
     debug('No agent invoices scored since the last daily post; skipping it', { since });
     await recordPostedThrough(db, 'daily', now);
     return;
   }
   const trendScores = await loadEnteredScores(context.dbConnection, addCentralDays(today, -DAILY_TREND_DAYS));
-  const callout = touchCalloutBlocks({
-    periodName: 'today',
-    previousName: 'yesterday',
-    current: touchPeriod(trendScores, 'today', today, addCentralDays(today, 1)),
-    previous: touchPeriod(trendScores, 'yesterday', addCentralDays(today, -1), today),
-    trend: dailyTouchTrend(trendScores, now, DAILY_TREND_DAYS),
-  });
+  const ruleCallout = dailyCallout(trendScores, today, now);
+  const callout = touchCalloutBlocks(ruleCallout);
   const replies = buildDailyInvoiceMessages(summary);
   const total = replies.length + 1;
   const lead = await postAudit(callout);
@@ -182,6 +228,7 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
       throw new Error(`Daily audit post stopped at message ${index + 2} of ${total} (${reply.error ?? 'request failed'}); the rest were not sent`);
     }
   }
+  await postJevReply(lead.ts, { rule: ruleCallout, jev: dailyCallout(trendScores.map(jevScoreView), today, now) }, scored);
   await recordPostedThrough(db, 'daily', now);
   debug('Posted daily agent invoice audit messages', { scored: summary.lines.length, messages: total });
 }
@@ -242,19 +289,11 @@ export const handler = withHandler(async (context, event?: { mode?: string; cove
 
 async function postWeeklyDigest(context: ProcessingContext): Promise<void> {
   const window = digestWindow(new Date());
-  const summary = summarizeScores(
-    await loadDigestScores(context.dbConnection, window.previousStart),
-    window,
-    await loadUnlabeledCancels(context.dbConnection)
-  );
+  const scored = await loadDigestScores(context.dbConnection, window.previousStart);
+  const summary = summarizeScores(scored, window, await loadUnlabeledCancels(context.dbConnection));
   const trendScores = await loadEnteredScores(context.dbConnection, addCentralDays(window.end, -7 * WEEKLY_TREND_WEEKS));
-  summary.touches = {
-    periodName: 'last week',
-    previousName: 'the week before',
-    current: touchPeriod(trendScores, 'last week', window.start, window.end),
-    previous: touchPeriod(trendScores, 'the week before', window.previousStart, window.start),
-    trend: weeklyTouchTrend(trendScores, window.end, WEEKLY_TREND_WEEKS),
-  };
+  const ruleCallout = weeklyCallout(trendScores, window);
+  summary.touches = ruleCallout;
   // A refreshed sandbox holds production's agent invoices, which would all look like pre-snapshot work.
   if (tenantRefreshWeekday() === undefined) {
     try {
@@ -273,5 +312,11 @@ async function postWeeklyDigest(context: ProcessingContext): Promise<void> {
 
   const posted = await postAudit(buildDigestBlocks(summary));
   if (!posted.ok) throw new Error(`Could not post the weekly audit digest (${posted.error ?? 'request failed'})`);
+  const inWindow = (date: Date | undefined) => Boolean(date && date >= window.start && date < window.end);
+  await postJevReply(
+    posted.ts,
+    { rule: ruleCallout, jev: weeklyCallout(trendScores.map(jevScoreView), window) },
+    scored.filter((score) => inWindow(score.entryReadAt) || inWindow(score.finalReadAt))
+  );
   debug('Posted agent invoice audit digest', { entered: summary.entered, canceled: summary.cancels });
 }

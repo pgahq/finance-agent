@@ -168,9 +168,32 @@ export const CREATE_AGENT_INVOICE_SCORES_TABLE = `
     release_sha VARCHAR(64),
     clustering_mode VARCHAR(16),
     terminal BOOLEAN NOT NULL DEFAULT false,
+    jev_shadow JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
+`;
+
+/**
+ * Adds `jev_shadow` to a table created before it existed. Nullable and additive, so an older deploy (whose upsert never
+ * names the column) keeps working and a revert needs no repair. The check runs first so a table that has the column
+ * takes no lock at cold start; if two cold starts both pass it, the second `ALTER` waits and skips on `duplicate_column`.
+ */
+export const ADD_AGENT_INVOICE_SCORES_JEV_SHADOW = `
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'agent_invoice_scores'
+         AND column_name = 'jev_shadow'
+    ) THEN
+      ALTER TABLE agent_invoice_scores ADD COLUMN jev_shadow JSONB;
+    END IF;
+  EXCEPTION WHEN duplicate_column THEN
+    NULL;
+  END
+  $$;
 `;
 
 // The digests and touch rollup select scores by when they were read.
@@ -311,6 +334,7 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
         await pool.query(indexSql);
       }
       await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
+      await pool.query(ADD_AGENT_INVOICE_SCORES_JEV_SHADOW);
       for (const indexSql of CREATE_AGENT_INVOICE_SCORES_INDEXES) {
         await pool.query(indexSql);
       }
