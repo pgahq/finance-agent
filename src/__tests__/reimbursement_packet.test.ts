@@ -109,6 +109,24 @@ describe('readReimbursementPacket', () => {
     expect(aiResponse.mock.calls[0][0].messages[0].content[0].text).toContain('Subject: Hotel reimbursement');
   });
 
+  it('shows the model the full conversation (plainTextBody), not only the one message that carried the attachment', async () => {
+    aiResponse.mockResolvedValue(packet());
+    await readReimbursementPacket(attachments, {
+      subject: 'Hotel reimbursement',
+      messageBody: 'Please see the attached form.',
+      plainTextBody: 'Please see the attached form.\n\nAP note: this payee is Supplier ID S-100011.',
+    } as never);
+    const text = aiResponse.mock.calls[0][0].messages[0].content[0].text;
+    expect(text).toContain('AP note: this payee is Supplier ID S-100011.');
+  });
+
+  it('falls back to messageBody when the conversation has no plainTextBody', async () => {
+    aiResponse.mockResolvedValue(packet());
+    await readReimbursementPacket(attachments, { subject: 'Hotel reimbursement', messageBody: 'Please see the attached form.' } as never);
+    const text = aiResponse.mock.calls[0][0].messages[0].content[0].text;
+    expect(text).toContain('Body: Please see the attached form.');
+  });
+
   it('throws on an unexpected shape so a packet is never silently booked as an invoice', async () => {
     aiResponse.mockResolvedValue({ kind: 'maybe' });
     await expect(readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never))
@@ -812,6 +830,31 @@ describe('decideReimbursement', () => {
     const decision = await decideReimbursement(db as never, packet({ payeeSupplierId: 'Supplier ID: s-000123' }));
     expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', matchedBy: 'supplier_id' } } });
     expect(findDocuments).not.toHaveBeenCalled();
+  });
+
+  it('matches by a Supplier ID named only in the Intercom conversation when the form prints none', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    const decision = await decideReimbursement(db as never, packet(), {
+      emailContext: { plainTextBody: 'AP note: this payee is Supplier ID S-000123.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', supplierId: 'S-000123', matchedBy: 'supplier_id' } } });
+    expect(findDocuments).not.toHaveBeenCalled();
+  });
+
+  it('prefers a printed Supplier ID over one named in the conversation when they disagree', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    const decision = await decideReimbursement(db as never, packet({ payeeSupplierId: 'S-000123' }), {
+      emailContext: { plainTextBody: 'AP note: actually use S-000999 instead.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', supplierId: 'S-000123', matchedBy: 'supplier_id' } } });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the name match when the conversation names no Supplier ID and none is printed', async () => {
+    const decision = await decideReimbursement(db as never, packet(), {
+      emailContext: { plainTextBody: 'Please reimburse Morgan Ellery for the hotel.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', matchedBy: 'name' } } });
   });
 
   it('stops when the printed Supplier ID belongs to a different name', async () => {
