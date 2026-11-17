@@ -145,6 +145,141 @@ export function isTaxLikeChargeLabel(label: string | null | undefined): boolean 
     && !tokens.some(token => TAX_METADATA_WORDS.has(token));
 }
 
+// Words that make a tax row payroll or employment tax whatever else surrounds it.
+const PAYROLL_TAX_WORDS = new Set(['payroll', 'employer', 'employers', 'employment', 'fica', 'futa', 'suta']);
+// A qualifier that names sales, use, or another transaction tax, so the row is not a bare `Tax` or `Taxes`.
+const TRANSACTION_TAX_QUALIFIERS = new Set([
+  'sales', 'use', 'vat', 'gst', 'hst', 'pst', 'qst', 'state', 'county', 'city', 'local', 'provincial', 'municipal', 'excise',
+]);
+
+type PayrollLineCategory = 'wages' | 'retirement' | 'benefits' | 'health' | 'workersComp';
+
+const PAYROLL_LINE_CATEGORIES: Array<{ category: PayrollLineCategory; pattern: RegExp }> = [
+  { category: 'wages', pattern: /\b(?:wages?|salary|salaries|payroll)\b/ },
+  { category: 'retirement', pattern: /\b(?:401k|403b|retirement|pension)\b/ },
+  { category: 'benefits', pattern: /\bbenefits?\b/ },
+  { category: 'health', pattern: /\b(?:medical|health|dental)\b/ },
+  { category: 'workersComp', pattern: /\bwork(?:er|ers|man|men)s? comp(?:ensation)?\b/ },
+];
+
+// A PO line that says the supplier recharges staff cost to PGA (`Labor recharge`, `Payroll recharge incl. taxes`).
+const PO_RECHARGE_PATTERN = /\brecharge\b/;
+const PO_PAYROLL_WORDS = /\b(?:payroll|labor|labour|wages?|salary|salaries|staff|staffing|benefits|employees?)\b/;
+
+export interface PayrollTaxContext {
+  lines?: Array<{ description?: string | null; descriptionCells?: string[] | null }> | null;
+  poLines?: Array<{ description?: string | null; memo?: string | null }> | null;
+}
+
+function payrollCategoriesOnLines(lines: PayrollTaxContext['lines']): Set<PayrollLineCategory> {
+  const found = new Set<PayrollLineCategory>();
+  for (const line of lines ?? []) {
+    const text = normalizeLabel([line.description, ...(line.descriptionCells ?? [])].filter(Boolean).join(' ')) ?? '';
+    for (const { category, pattern } of PAYROLL_LINE_CATEGORIES) {
+      if (pattern.test(text)) found.add(category);
+    }
+  }
+  return found;
+}
+
+/**
+ * Whether the invoice bills staff cost back to PGA: its lines name at least two payroll categories (Wages, 401K,
+ * Benefits, Medical, Workers Comp) including wages or workers comp, or a PO line says the supplier recharges
+ * payroll or labor. Benefits or health rows alone (an insurance administrator's bill) are not enough.
+ */
+export function isPayrollRechargeInvoice(context: PayrollTaxContext): boolean {
+  const categories = payrollCategoriesOnLines(context.lines);
+  if (categories.size >= 2 && (categories.has('wages') || categories.has('workersComp'))) return true;
+  return (context.poLines ?? []).some(line => {
+    const text = normalizeLabel([line.description, line.memo].filter(Boolean).join(' ')) ?? '';
+    return PO_RECHARGE_PATTERN.test(text) && PO_PAYROLL_WORDS.test(text);
+  });
+}
+
+/**
+ * Header Tax_Amount is only for sales and use tax. A printed tax row is payroll or employment tax when its label
+ * says so (`Payroll Taxes`, `Employer Taxes`, `FICA`), or when it is a bare tax label (`Taxes`, `Tax`, no sales,
+ * use, VAT, GST, or similar qualifier) on an invoice that bills payroll cost back to PGA.
+ */
+export function isPayrollTaxCharge(label: string | null | undefined, context: PayrollTaxContext): boolean {
+  const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
+  if (tokens.some(token => PAYROLL_TAX_WORDS.has(token))) return true;
+  if (!isTaxLikeChargeLabel(label) || tokens.some(token => TRANSACTION_TAX_QUALIFIERS.has(token))) return false;
+  return isPayrollRechargeInvoice(context);
+}
+
+export interface PlacedPayrollTaxCharges {
+  lines: ExtractedInvoiceLine[];
+  /** The printed other charges that stay for header tax handling. */
+  otherCharges: PrintedCharge[] | null | undefined;
+  /** Rows created from printed charges, so row counts taken before placement can be corrected. */
+  addedLines: number;
+  /** Amount-check sentence naming the charges kept on the lines. */
+  message?: string;
+}
+
+function labelTokenSet(text: string | null | undefined): Set<string> {
+  return new Set((normalizeLabel(text) ?? '').split(' ').filter(token => token.length >= 3));
+}
+
+/**
+ * A printed tax row that is payroll or employment tax is part of what the invoice bills, not sales or use tax, so
+ * it becomes an invoice line instead of reaching header Tax_Amount (see isPayrollTaxCharge). A row that repeats the
+ * header tax, a credit or unparseable amount, and a charge an existing line already shows stay where they were.
+ * Runs before applyPrintedTaxCharges, so the gap arithmetic never decides where the row goes.
+ */
+export function placePayrollTaxCharges(input: {
+  lines: ExtractedInvoiceLine[];
+  otherCharges?: PrintedCharge[] | null;
+  tax?: string | null;
+  taxLabel?: string | null;
+  poLines?: PayrollTaxContext['poLines'];
+}): PlacedPayrollTaxCharges {
+  const unchanged: PlacedPayrollTaxCharges = { lines: input.lines, otherCharges: input.otherCharges, addedLines: 0 };
+  if (!input.otherCharges?.length) return unchanged;
+
+  const context: PayrollTaxContext = { lines: input.lines, poLines: input.poLines };
+  const headerTaxCents = toCents(chargeAmount(input.tax) ?? 0);
+  const lineEntries = input.lines.map(line => ({
+    tokens: labelTokenSet(line.description),
+    cents: Math.abs(toCents(signedChargeLineAmount(line) ?? 0)),
+  }));
+  const placed: TaxCandidate[] = [];
+  const remaining: PrintedCharge[] = [];
+  const repeated: PrintedCharge[] = [];
+  for (const charge of input.otherCharges) {
+    const amount = parseCanonicalChargeAmount(charge.amount);
+    const cents = amount != null && amount > 0 ? toCents(amount) : undefined;
+    if (cents == null || !isPayrollTaxCharge(charge.label, context) || restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents)) {
+      remaining.push(charge);
+      continue;
+    }
+    const chargeTokens = labelTokenSet(charge.label);
+    const alreadyLine = lineEntries.some(entry => entry.cents === cents && [...chargeTokens].some(token => entry.tokens.has(token)));
+    if (alreadyLine) repeated.push(charge);
+    else placed.push({ label: charge.label, cents });
+  }
+  if (placed.length === 0 && repeated.length === 0) return unchanged;
+
+  return {
+    lines: [
+      ...input.lines,
+      ...placed.map(candidate => ({
+        description: candidate.label,
+        quantity: null,
+        unitCost: null,
+        totalPrice: (candidate.cents / 100).toFixed(2),
+        hasDiscount: null,
+      })),
+    ],
+    otherCharges: remaining,
+    addedLines: placed.length,
+    ...(placed.length && {
+      message: `Kept ${describeCharges(placed)} on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and ${placed.length > 1 ? 'these read' : 'this reads'} as payroll or employment tax.`,
+    }),
+  };
+}
+
 export interface AppliedTaxCharges {
   taxAmount?: string;
   taxCleared: boolean;
@@ -170,7 +305,8 @@ function describeCharges(candidates: TaxCandidate[]): string {
 /**
  * Adds printed tax-like charges to the header tax amount, but only when lines + freight + tax fall
  * short of the amount due by exactly those charges. A rate is never turned into an amount, a charge
- * that repeats the tax already read is skipped, and any other gap is left for the amount check.
+ * that repeats the tax already read is skipped, payroll or employment tax is never header tax, and any
+ * other gap is left for the amount check.
  */
 export function applyPrintedTaxCharges(input: {
   charges?: PrintedCharge[] | null;
@@ -181,6 +317,8 @@ export function applyPrintedTaxCharges(input: {
   taxLabel?: string | null;
   taxCleared: boolean;
   chargeWithheld?: boolean;
+  /** PO lines, so a payroll recharge PO keeps a bare tax row out of header tax. */
+  poLines?: PayrollTaxContext['poLines'];
 }): AppliedTaxCharges {
   const unchanged: AppliedTaxCharges = { taxAmount: input.tax, taxCleared: input.taxCleared };
   if (input.chargeWithheld || !input.charges?.length || input.lines.length === 0) return unchanged;
@@ -202,6 +340,7 @@ export function applyPrintedTaxCharges(input: {
   const candidates: TaxCandidate[] = [];
   for (const charge of input.charges) {
     if (!isTaxLikeChargeLabel(charge.label)) continue;
+    if (isPayrollTaxCharge(charge.label, { lines: input.lines, poLines: input.poLines })) continue;
     const amount = parseCanonicalChargeAmount(charge.amount);
     if (amount == null || amount <= 0) continue;
     const cents = toCents(amount);

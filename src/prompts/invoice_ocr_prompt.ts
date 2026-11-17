@@ -47,7 +47,7 @@ export const InvoiceOcrSchema = z.object({
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00"). Never compute it from a rate.'),
-  })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Return an empty array when there is none.'),
+  })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount, except a payroll or employer tax row on an invoice that bills payroll cost (that stays a line item). Return an empty array when there is none.'),
   extractedSummaryCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
     amount: z.string().describe('The amount as printed, keeping a printed minus sign or parentheses (e.g. "$5.00", "-$13.80", "($13.80)"). Empty string when only a rate is printed. Never compute it from a rate.'),
@@ -316,7 +316,7 @@ Read the invoice attachment and extract the tax amount. It may be labeled as "Ta
 
 CRITICAL: If the invoice shows a "Shipping and Handling" or similar row with no amount, and a separate "Sales Tax" row with an amount, do NOT put the sales tax amount in \`extractedFreightAmount\`. Put the sales tax amount in \`extractedTaxAmount\` with label "Sales Tax", and leave \`extractedFreightAmount\` null. For example, an invoice with Sub-Total $8,514.38, blank Shipping and Handling, Sales Tax $510.86, and Invoice Total $9,025.24 must return extractedFreightAmount null, extractedFreightLabel null, extractedTaxAmount "$510.86", extractedTaxLabel "Sales Tax".
 
-If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no tax amount could be found or if it is ambiguous, omit both \`extractedTaxAmount\` and \`extractedTaxLabel\`.
+If the invoice presents sales or use tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. Only sales and use tax belongs here: a "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax and stays a line item (Part 5.6). If no tax amount could be found or if it is ambiguous, omit both \`extractedTaxAmount\` and \`extractedTaxLabel\`.
 
 ---
 
@@ -325,11 +325,13 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5% EnvChg Tax". Put the main sales tax in \`extractedTaxAmount\`. List every additional row whose printed label says tax in \`extractedOtherCharges\` with its exact printed label and printed amount, even when the row is printed in the line table, and do not put it in \`extractedInvoiceLines\`.
 
 - A row in the line table that prints a quantity, a unit price, and its own extended amount (for example \`1 PROPERTY TAX SURCHARGE 20.220 EACH 20.22\`) is a priced line item, not an additional tax row, even when its label contains the word tax. Return it in \`extractedInvoiceLines\`. Rows that print only a label and an amount (\`Sales Tax\`, \`5% EnvChg Tax\`) are tax rows.
+- Header tax is only sales and use tax. A "Taxes" or "Tax" row on an invoice that bills payroll cost back to PGA (its line items are wages, 401K, benefits, medical, workers comp, and similar) is employer payroll tax, a billed charge, even when the invoice also prints "Sales Tax Amount $0.00". Do not list it here or in \`extractedTaxAmount\`: return it in \`extractedInvoiceLines\` with the other rows, with its printed amount. A row labeled payroll tax, employer tax, employment tax, or FICA is the same.
 - Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them (freight in the freight fields, everything else as a line item).
 - Copy the label exactly as printed. Do not rename a row or add the word "Tax" to a label that does not print it.
 - Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that row out. Never compute an amount from a rate.
 - Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
 - For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, and a "5% EnvChg Tax" row of $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }].
+- For example, an invoice whose rows are Wages $4,000.00, 401K $200.00, Benefits $300.00, Medical $250.00, Workers Comp $150.00, and Taxes $500.00, with "Sales Tax Amount $0.00" and Amount Due $5,400.00, must return all six rows in extractedInvoiceLines, extractedTaxAmount "$0.00", extractedTaxLabel "Sales Tax Amount", and extractedOtherCharges [].
 - If there is no additional tax row, return an empty array.
 
 ---
@@ -414,7 +416,7 @@ Extract the individual line items from the invoice document:
 
 Extract every printed row, in document order. Two rows with the same description, quantity, and price are two separate charges when they are printed under different dates, events, or section headings, or in different places; return both. Only skip a row that is clearly the same printed row repeated, such as a page header or a table carried over onto the next page.
 
-Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
+Exclude any lines that represent sales or use tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead. The exception is employer payroll tax: on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp), a "Taxes" row is a line item, so return it as a row (Part 5.6).
 Exclude a single freight, shipping, handling, or delivery charge from the lines — capture it in \`extractedFreightAmount\` instead. When several separate delivery, pickup, or similar rows are printed as priced table rows (Part 5), return every one of them as a line.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.

@@ -28,6 +28,7 @@ import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, sup
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooFreeRow, mobileKangarooHeader, mobileKangarooRows } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
+import { payrollRechargeHeader, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
 
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
@@ -1943,6 +1944,105 @@ describe('create_invoice', () => {
       await processor({ data: [attachmentRequest('new-invoices/req-envchg-rate/invoice.pdf')] } as any);
 
       expect(workday.submitNewSupplierInvoice.mock.calls[0][1].extractedTaxAmount).toBe('$28.26');
+    });
+  });
+
+  describe('payroll recharge invoice (fictional)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: Array<{ description: string; totalPrice: string | null }>) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: 0,
+        unitCost: 0,
+        extendedAmount: Number(line.totalPrice),
+      })),
+      appliedFallbacks,
+    });
+    const keptMessage = 'Kept "Taxes" $500.00 on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and this reads as payroll or employment tax.';
+
+    it('keeps a Taxes row read as a separate charge on the lines and header tax at $0.00', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: [payrollTaxesCharge],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines.map((line: any) => [line.description, line.extendedAmount])).toEqual([
+        ['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500],
+      ]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(`Amount check: ${keptMessage}`);
+      expect(notes).not.toContain('Added "Taxes"');
+      expect(notes).not.toContain('but the amount due is');
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([keptMessage]);
+      expect(slack.notifyResult.mock.calls[0][3].amountMismatch).toBeUndefined();
+    });
+
+    it('leaves a Taxes row the extractor already read as a line alone, with header tax at $0.00', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeRows,
+        extractedOtherCharges: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-line/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines).toHaveLength(6);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck ?? []).toEqual([]);
+    });
+
+    it('does not repeat a Taxes row that the extractor returned both as a line and as a charge', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeRows,
+        extractedOtherCharges: [payrollTaxesCharge],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-both/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines).toHaveLength(6);
+    });
+
+    it('still adds an environmental tax row to header tax when no payroll signal is printed', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$5,417.00',
+        extractedTaxAmount: '$0.00',
+        extractedTaxLabel: 'Sales Tax Amount',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: [{ description: 'Catering service', quantity: null, unitCost: null, totalPrice: '5400.00', hasDiscount: null }],
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-envchg-nopayroll/invoice.pdf')] } as any);
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].extractedTaxAmount).toBe('17.00');
     });
   });
 

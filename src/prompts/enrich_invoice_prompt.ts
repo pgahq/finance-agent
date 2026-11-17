@@ -109,14 +109,14 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedFreightLabel: z.string().nullable().describe('The exact label on the invoice for the freight amount (e.g. "Freight", "Shipping and Handling", "Delivery"). Null if no freight amount was found.'),
 
-  extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
+  extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include sales, use, VAT, GST, or HST tax lines in extractedInvoiceLines. Only sales and use tax belongs here: a "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax, so leave it out of this field. Null if no tax amount could be found or if it is ambiguous.'),
 
   extractedTaxLabel: z.string().nullable().describe('The exact label on the invoice for the tax amount (e.g. "Sales Tax", "VAT", "GST"). Null if no tax amount was found.'),
 
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),
-  })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Null when there is none.'),
+  })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount, except a payroll or employer tax row on an invoice that bills payroll cost (that stays a line). Null when there is none.'),
 
   extractedSummaryCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
@@ -176,7 +176,7 @@ export const InvoiceEnrichmentSchema = z.object({
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.'),
     tableNumber: z.number().int().nullable().describe('Which table on the document this row came from, numbered 1, 2, 3... in document order. Rows from the same table share a number. Use 1 when the document has one line-item table. Null only if you cannot tell which table the row belongs to.'),
     sectionLabel: z.string().nullable().optional().describe('The heading the row is printed under (for example a date and event name such as "Wednesday, November 4, 2026 - Awards Event Enhancements"). It tells apart rows that are otherwise identical. Null when the row has no heading.')
-  })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
+  })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or sales/use tax lines — those belong in extractedFreightAmount / extractedTaxAmount. A "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax, a billed charge: include it as a line. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({
     ...emailCodingFields,

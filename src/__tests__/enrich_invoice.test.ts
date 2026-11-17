@@ -1766,6 +1766,61 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([added]);
   });
 
+  it('keeps a payroll Taxes row on the lines on update instead of header tax (fictional payroll recharge)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { payrollRechargeHeader, payrollRechargeSiblingRows, payrollTaxesCharge } = require('./fixtures/payroll_recharge.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Staffing Co', memo: 'staff recharge' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...payrollRechargeHeader,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: payrollRechargeSiblingRows,
+      extractedOtherCharges: [payrollTaxesCharge],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice) })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: 'INV-900001$1', id: '0627e00a601c1001085f64bd33e20001' }
+      }]
+    } as any);
+
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.extractedTaxAmount).toBeUndefined();
+    expect(params.finalLines.map((line: { description: string; extendedAmount: number }) => [line.description, line.extendedAmount]))
+      .toEqual([['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500]]);
+    const kept = 'Kept "Taxes" $500.00 on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and this reads as payroll or employment tax.';
+    expect(params.buildNotes([])).toContain(`Amount check: ${kept}`);
+    expect(params.buildNotes([])).not.toContain('Added "Taxes"');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([kept]);
+  });
+
   it('replaces the printed lines with one deposit line on update (SUPIN-470584)', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

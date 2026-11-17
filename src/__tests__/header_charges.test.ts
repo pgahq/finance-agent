@@ -1,6 +1,7 @@
-import { applyPrintedTaxCharges, hasPrintedSettlement, isTaxLikeChargeLabel, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollRechargeInvoice, isPayrollTaxCharge, isTaxLikeChargeLabel, placePayrollTaxCharges, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooHeader } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
+import { payrollRechargeHeader, payrollRechargePoLine, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
 import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges, type FinalInvoiceLine } from '../lib/invoice_lines.js';
 
 // SUPIN-467011: two lines, Sales Tax $28.26, a printed EnvChg tax row of $17.00, amount due $387.76.
@@ -839,5 +840,223 @@ describe('reinterpretSinglePriceLinesForCharges with a tax-inclusive price besid
     const withFreight = { ...context, freight: '$10.00', amountDue: '$723.37' };
     const lines = [{ ...mobileKangarooDisplayRow, unitCost: '$723.37', totalPrice: '$723.37' }];
     expect(reinterpretSinglePriceLinesForCharges(lines, withFreight).lines[0].totalPrice).toBe('$659.00');
+  });
+});
+
+describe('payroll tax is not header tax', () => {
+  const siblingContext = { lines: payrollRechargeSiblingRows };
+  const poContext = { poLines: [payrollRechargePoLine] };
+
+  describe('isPayrollRechargeInvoice', () => {
+    it('reads wages plus another payroll category as a payroll recharge', () => {
+      expect(isPayrollRechargeInvoice(siblingContext)).toBe(true);
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Workers\u2019 Comp' }, { description: '401(k)' }] })).toBe(true);
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Salaries', descriptionCells: ['Week 1'] }, { description: 'Health Insurance' }] })).toBe(true);
+    });
+
+    it('needs more than one stray word or a benefits administrator bill', () => {
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Wages' }] })).toBe(false);
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Benefits administration fee' }, { description: 'Medical premium' }] })).toBe(false);
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Office supplies' }, { description: 'Taxes' }] })).toBe(false);
+      expect(isPayrollRechargeInvoice({})).toBe(false);
+    });
+
+    it('reads a PO line that recharges payroll or labor', () => {
+      expect(isPayrollRechargeInvoice(poContext)).toBe(true);
+      expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Payroll recharge' }] })).toBe(true);
+      expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Staffing', memo: 'Monthly recharge of employee wages' }] })).toBe(true);
+    });
+
+    it('does not read a PO line that only names labor or payroll', () => {
+      expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Labor and materials' }] })).toBe(false);
+      expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Payroll processing fees' }] })).toBe(false);
+      expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Equipment recharge' }] })).toBe(false);
+    });
+  });
+
+  describe('isPayrollTaxCharge', () => {
+    it.each(['Payroll Taxes', 'Employer Taxes', 'Employment Tax', 'FICA', 'Employer FICA Tax', 'Payroll Tax 7.65%'])(
+      'treats %s as payroll tax on any invoice', (label) => expect(isPayrollTaxCharge(label, {})).toBe(true)
+    );
+
+    it.each(['Taxes', 'Tax'])('treats a bare %s label as payroll tax only on a payroll recharge', (label) => {
+      expect(isPayrollTaxCharge(label, siblingContext)).toBe(true);
+      expect(isPayrollTaxCharge(label, poContext)).toBe(true);
+      expect(isPayrollTaxCharge(label, {})).toBe(false);
+      expect(isPayrollTaxCharge(label, { lines: [{ description: 'Office supplies' }] })).toBe(false);
+    });
+
+    it.each(['Sales Tax', 'Use Tax', 'State Tax', 'VAT', 'Sales and Use Tax'])(
+      'keeps %s eligible for header tax even on a payroll recharge', (label) => expect(isPayrollTaxCharge(label, siblingContext)).toBe(false)
+    );
+
+    it('does not treat a non-tax label as payroll tax without a payroll word', () => {
+      expect(isPayrollTaxCharge('EnvChg Tax', {})).toBe(false);
+      expect(isPayrollTaxCharge('Fuel Surcharge', siblingContext)).toBe(false);
+      expect(isPayrollTaxCharge(null, siblingContext)).toBe(false);
+    });
+  });
+
+  describe('placePayrollTaxCharges', () => {
+    const base = { lines: payrollRechargeSiblingRows, tax: payrollRechargeHeader.extractedTaxAmount, taxLabel: payrollRechargeHeader.extractedTaxLabel };
+
+    it('moves a Taxes row read as a separate charge onto the lines', () => {
+      const placed = placePayrollTaxCharges({ ...base, otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.lines).toEqual(payrollRechargeRows.map(line => expect.objectContaining({ description: line.description, totalPrice: line.totalPrice })));
+      expect(placed.lines.at(-1)).toEqual({ description: 'Taxes', quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null });
+      expect(placed.otherCharges).toEqual([]);
+      expect(placed.addedLines).toBe(1);
+      expect(placed.message).toBe('Kept "Taxes" $500.00 on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and this reads as payroll or employment tax.');
+    });
+
+    it('then leaves nothing for header tax and the lines equal the amount due', () => {
+      const placed = placePayrollTaxCharges({ ...base, otherCharges: [payrollTaxesCharge] });
+      const applied = applyPrintedTaxCharges({
+        charges: placed.otherCharges,
+        amountDue: payrollRechargeHeader.extractedAmountDue,
+        lines: placed.lines,
+        tax: payrollRechargeHeader.extractedTaxAmount,
+        taxLabel: payrollRechargeHeader.extractedTaxLabel,
+        taxCleared: false,
+      });
+
+      expect(applied).toEqual({ taxAmount: '$0.00', taxCleared: false });
+      expect(reconcileSubmittedCharges(placed.lines, { amountDue: payrollRechargeHeader.extractedAmountDue, tax: applied.taxAmount }).unreconciled).toBeUndefined();
+    });
+
+    it('moves a Taxes row when the PO line says the recharge includes taxes and the rows name no categories', () => {
+      const placed = placePayrollTaxCharges({
+        lines: [{ description: 'Staff for September', quantity: null, unitCost: null, totalPrice: '4900.00', hasDiscount: null }],
+        otherCharges: [payrollTaxesCharge],
+        poLines: [payrollRechargePoLine],
+      });
+
+      expect(placed.lines).toHaveLength(2);
+      expect(placed.otherCharges).toEqual([]);
+    });
+
+    it('moves an explicit payroll tax label even with no payroll rows or PO', () => {
+      const placed = placePayrollTaxCharges({
+        lines: [{ description: 'Services', quantity: null, unitCost: null, totalPrice: '4900.00', hasDiscount: null }],
+        otherCharges: [{ label: 'Employer Payroll Taxes', amount: '500.00' }],
+      });
+
+      expect(placed.lines.at(-1)).toMatchObject({ description: 'Employer Payroll Taxes', totalPrice: '500.00' });
+    });
+
+    it('moves every payroll tax row and keeps the sales tax row for header tax', () => {
+      const placed = placePayrollTaxCharges({
+        ...base,
+        otherCharges: [payrollTaxesCharge, { label: 'FICA', amount: '$30.00' }, { label: 'Sales Tax', amount: '$12.00' }],
+      });
+
+      expect(placed.addedLines).toBe(2);
+      expect(placed.otherCharges).toEqual([{ label: 'Sales Tax', amount: '$12.00' }]);
+      expect(placed.message).toContain('"Taxes" $500.00 and "FICA" $30.00');
+      expect(placed.message).toContain('these read as payroll or employment tax');
+    });
+
+    it('does not add a charge a line already shows', () => {
+      const placed = placePayrollTaxCharges({ ...base, lines: payrollRechargeRows, otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.lines).toEqual(payrollRechargeRows);
+      expect(placed.addedLines).toBe(0);
+      expect(placed.otherCharges).toEqual([]);
+      expect(placed.message).toBeUndefined();
+    });
+
+    it('adds a charge whose amount only matches an unrelated line', () => {
+      const placed = placePayrollTaxCharges({
+        ...base,
+        lines: [...payrollRechargeSiblingRows, { description: 'Parking', quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null }],
+        otherCharges: [payrollTaxesCharge],
+      });
+
+      expect(placed.addedLines).toBe(1);
+    });
+
+    it('leaves a charge that restates the header tax, a rate-only row, and a credit alone', () => {
+      expect(placePayrollTaxCharges({ ...base, tax: '$500.00', taxLabel: 'Taxes', otherCharges: [payrollTaxesCharge] }).addedLines).toBe(0);
+      const rate = { label: 'Taxes 7.65%', amount: '7.65%' };
+      const credit = { label: 'Taxes', amount: '-$20.00' };
+      const unchanged = placePayrollTaxCharges({ ...base, otherCharges: [rate, credit] });
+      expect(unchanged.lines).toBe(base.lines);
+      expect(unchanged.otherCharges).toEqual([rate, credit]);
+    });
+
+    it('does nothing for a bare Taxes row on an invoice with no payroll signal', () => {
+      const lines = [{ description: 'Office supplies', quantity: null, unitCost: null, totalPrice: '4900.00', hasDiscount: null }];
+      const placed = placePayrollTaxCharges({ lines, otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.lines).toBe(lines);
+      expect(placed.otherCharges).toEqual([payrollTaxesCharge]);
+      expect(placed.addedLines).toBe(0);
+    });
+
+    it('does nothing without printed other charges', () => {
+      expect(placePayrollTaxCharges({ ...base, otherCharges: null })).toEqual({ lines: base.lines, otherCharges: null, addedLines: 0 });
+    });
+  });
+
+  describe('applyPrintedTaxCharges', () => {
+    const input = {
+      amountDue: payrollRechargeHeader.extractedAmountDue,
+      lines: payrollRechargeSiblingRows,
+      tax: payrollRechargeHeader.extractedTaxAmount,
+      taxLabel: payrollRechargeHeader.extractedTaxLabel,
+      taxCleared: false,
+    };
+
+    it('adds a bare Taxes charge that closes the gap when nothing says payroll', () => {
+      const applied = applyPrintedTaxCharges({ ...input, lines: [{ description: 'Staff for September', quantity: null, unitCost: null, totalPrice: '4900.00', hasDiscount: null }], charges: [payrollTaxesCharge] });
+
+      expect(applied.taxAmount).toBe('500.00');
+    });
+
+    it('never adds a bare Taxes charge to header tax on a payroll recharge, even when it closes the gap', () => {
+      const applied = applyPrintedTaxCharges({ ...input, charges: [payrollTaxesCharge] });
+
+      expect(applied).toEqual({ taxAmount: '$0.00', taxCleared: false });
+    });
+
+    it('never adds a bare Taxes charge when the PO line is a payroll recharge', () => {
+      const applied = applyPrintedTaxCharges({
+        ...input,
+        lines: [{ description: 'Staff for September', quantity: null, unitCost: null, totalPrice: '4900.00', hasDiscount: null }],
+        charges: [payrollTaxesCharge],
+        poLines: [payrollRechargePoLine],
+      });
+
+      expect(applied).toEqual({ taxAmount: '$0.00', taxCleared: false });
+    });
+
+    it('never adds a payroll-labeled charge to header tax', () => {
+      const applied = applyPrintedTaxCharges({
+        ...input,
+        lines: [{ description: 'Services', quantity: null, unitCost: null, totalPrice: '4900.00', hasDiscount: null }],
+        charges: [{ label: 'Employer Payroll Taxes', amount: '$500.00' }],
+      });
+
+      expect(applied.taxAmount).toBe('$0.00');
+      expect(applied.message).toBeUndefined();
+    });
+
+    it('still adds a sales tax row on a payroll recharge', () => {
+      const applied = applyPrintedTaxCharges({
+        ...input,
+        amountDue: '$5,412.00',
+        lines: payrollRechargeRows,
+        charges: [{ label: 'Use Tax', amount: '$12.00' }],
+      });
+
+      expect(applied.taxAmount).toBe('12.00');
+    });
+
+    it('still adds the environmental charge the SUPIN-467011 fix was built for', () => {
+      const applied = applyPrintedTaxCharges({ ...base, charges: [envChg] });
+
+      expect(applied.taxAmount).toBe('45.26');
+    });
   });
 });

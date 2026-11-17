@@ -1146,6 +1146,14 @@ describe('invoice OCR pass', () => {
       expect(invoiceOcrPrompt).toContain('fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them');
       expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
     });
+
+    it('keeps a payroll Taxes row on the lines with a fictional example', () => {
+      expect(invoiceOcrPrompt).toContain('Header tax is only sales and use tax.');
+      expect(invoiceOcrPrompt).toContain('is employer payroll tax, a billed charge');
+      expect(invoiceOcrPrompt).toContain('Wages $4,000.00, 401K $200.00, Benefits $300.00, Medical $250.00, Workers Comp $150.00, and Taxes $500.00');
+      expect(invoiceOcrPrompt).toContain('must return all six rows in extractedInvoiceLines, extractedTaxAmount "$0.00", extractedTaxLabel "Sales Tax Amount", and extractedOtherCharges []');
+      expect(invoiceOcrPrompt).toContain('The exception is employer payroll tax');
+    });
   });
 
   describe('totals-block rows', () => {

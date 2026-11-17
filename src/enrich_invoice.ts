@@ -69,7 +69,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, placeChargesOnPoServiceLines, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -340,9 +340,18 @@ async function processInvoice(
     if (freeRows.length) debug(`Free rows left off: ${freeRowsNote(freeRows)}`);
     // A row or printed charge that names a PO service line (delivery, pickup, a surcharge) is billed on that line
     // instead of being folded into header freight or tax.
-    const placedCharges = placeChargesOnPoServiceLines({
+    // Payroll or employment tax is not sales or use tax, so it stays an invoice line instead of joining header tax.
+    const payrollTaxCharges = placePayrollTaxCharges({
       lines: extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost)),
       otherCharges: result.extractedOtherCharges,
+      tax: result.extractedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      poLines,
+    });
+    if (payrollTaxCharges.message) debug(payrollTaxCharges.message);
+    const placedCharges = placeChargesOnPoServiceLines({
+      lines: payrollTaxCharges.lines,
+      otherCharges: payrollTaxCharges.otherCharges,
       freightAmount: result.extractedFreightAmount,
       freightLabel: result.extractedFreightLabel,
       taxAmount: result.extractedTaxAmount,
@@ -350,7 +359,7 @@ async function processInvoice(
     });
     if (placedCharges.placed.length) debug('Placed on PO service lines', placedCharges.placed);
     const printedLines = placedCharges.lines;
-    const printedRowCount = extractedRows.length + placedCharges.addedLines;
+    const printedRowCount = extractedRows.length + payrollTaxCharges.addedLines + placedCharges.addedLines;
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
@@ -407,6 +416,7 @@ async function processInvoice(
       taxLabel: result.extractedTaxLabel,
       taxCleared: headerTaxCleared,
       chargeWithheld,
+      poLines,
     });
     const { taxAmount: extractedTaxAmount, taxCleared } = taxCharges;
     const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
@@ -425,6 +435,7 @@ async function processInvoice(
       : extractedChargeReconciliation(extractedLines, extractedCharges);
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(payrollTaxCharges.message ? [payrollTaxCharges.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...(submitsLines
         ? chargeReconciliationMessages(chargeReconciliation)
