@@ -837,13 +837,23 @@ describe('decideReimbursement', () => {
     expect(findDocuments).not.toHaveBeenCalled();
   });
 
-  it('matches by a Supplier ID named only in the Intercom conversation when the form prints none', async () => {
+  it('matches by a Supplier ID named only in the Intercom conversation when the form prints none, tagged as conversation-sourced', async () => {
     db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
     const decision = await decideReimbursement(db as never, packet(), {
       emailContext: { plainTextBody: 'AP note: this payee is Supplier ID S-000123.' } as never,
     });
-    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', supplierId: 'S-000123', matchedBy: 'supplier_id' } } });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', supplierId: 'S-000123', matchedBy: 'supplier_id_conversation' } } });
     expect(findDocuments).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the name match, rather than stopping, when a conversation-named ID belongs to someone else', async () => {
+    // The ID is real but unrelated to this payee (a hotel's Supplier ID, an old invoice, a signature); treating it
+    // as a stop would newly block a packet that a unique name match would have booked before this PR.
+    db.query.mockResolvedValue([{ workday_id: 'wid-other', metadata: { supplierId: 'S-000999', supplierName: 'HARBOR VIEW HOTEL LLC' } }]);
+    const decision = await decideReimbursement(db as never, packet(), {
+      emailContext: { plainTextBody: 'Folio reference S-000999 is attached for backup.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', matchedBy: 'name' } } });
   });
 
   it('prefers a printed Supplier ID over one named in the conversation when they disagree', async () => {

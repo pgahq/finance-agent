@@ -93,14 +93,14 @@ describe('reimbursement payee lookup on a supplier cache', () => {
     }
   });
 
-  it('books the Supplier ID an AP note names, instead of stopping on an ambiguous name, when the cached name agrees', async () => {
+  it('books the Supplier ID an AP note names, instead of stopping on an ambiguous name, tagged as conversation-sourced', async () => {
     CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
     db.query.mockResolvedValueOnce([{ workday_id: 'wid-jordan-2', metadata: { supplierId: 'S-100011', supplierName: 'JORDAN REYES' } }]);
     try {
       const decision = await decide('Jordan Reyes', { plainTextBody: 'AP note: this payee is Supplier ID S-100011, not the other Jordan Reyes record.' });
       expect(decision).toMatchObject({
         outcome: 'apply',
-        reimbursement: { payee: { workdayId: 'wid-jordan-2', supplierId: 'S-100011', supplierName: 'JORDAN REYES', matchedBy: 'supplier_id' } },
+        reimbursement: { payee: { workdayId: 'wid-jordan-2', supplierId: 'S-100011', supplierName: 'JORDAN REYES', matchedBy: 'supplier_id_conversation' } },
       });
     } finally {
       CACHE.pop();
@@ -117,12 +117,20 @@ describe('reimbursement payee lookup on a supplier cache', () => {
     }
   });
 
-  it('stops when the conversation names a Supplier ID that belongs to a different person', async () => {
+  it('still books an unambiguous name match when the conversation happens to name an unrelated Supplier ID', async () => {
+    // The hotel's own Supplier ID shows up in the thread (e.g. quoted from a folio), but the payee name alone
+    // is unique in the cache, so the unrelated ID must not block the booking that would have happened anyway.
+    db.query.mockResolvedValueOnce([{ workday_id: 'wid-avery-hotel', metadata: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } }]);
+    const decision = await decide('Avery Lindqvist', { plainTextBody: 'The hotel folio references Supplier ID S-100004 for billing.' });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-avery', matchedBy: 'name' } } });
+  });
+
+  it('falls through to the ambiguous-name stop, not the mismatch wording, when the conversation names an unrelated ID', async () => {
     CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
     db.query.mockResolvedValueOnce([{ workday_id: 'wid-avery-hotel', metadata: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } }]);
     try {
       const decision = await decide('Jordan Reyes', { plainTextBody: 'Use S-100004 for this payment.' });
-      expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('does not match Jordan Reyes') } });
+      expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('no single supplier in the cache matches') } });
     } finally {
       CACHE.pop();
     }

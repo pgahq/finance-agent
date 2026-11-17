@@ -56,7 +56,13 @@ export interface AppliedReimbursement {
     supplierName: string;
     supplierId?: string;
     nameOnForm: string;
-    matchedBy: 'supplier_id' | 'name';
+    /**
+     * 'supplier_id': the Supplier ID was printed on the form or in the email (the model read it).
+     * 'supplier_id_conversation': no ID was printed; one named elsewhere in the Intercom conversation or email
+     * body resolved to a cached supplier whose name matches. Kept distinct from 'supplier_id' so the note and
+     * Slack line say where the ID came from, since AP looking for it on the form would not find it.
+     */
+    matchedBy: 'supplier_id' | 'supplier_id_conversation' | 'name';
   };
   amount: number;
   amountLabel: string;
@@ -127,12 +133,12 @@ export function hasReimbursementSignal(
   return SIGNAL.test(text);
 }
 
-// Deliberately still messageBody first, not plainTextBody: a live check on the real incident packet (see PR
-// #275) showed that once a later Intercom note was in this text, the two independent packet reads could each
-// notice or miss it and disagree on payeeSupplierId, sending an otherwise-resolvable packet to manual entry —
-// the opposite of the fix below. resolvePayee reads the full conversation for a trusted Supplier ID directly
-// from emailContext.plainTextBody (resolveSupplierIdFromText), with no model involved, so this function does
-// not need to show the model the conversation for that to work.
+// Deliberately still messageBody first, not plainTextBody: a live check on the real incident packet showed that
+// once a later Intercom note was in this text, the two independent packet reads could each notice or miss it
+// and disagree on payeeSupplierId, sending an otherwise-resolvable packet to manual entry — the opposite of the
+// fix below. resolvePayee reads the full conversation for a Supplier ID directly from emailContext.plainTextBody
+// (resolveSupplierIdFromText), with no model involved, so this function does not need to show the model the
+// conversation for that to work.
 function emailText(emailContext: EmailContextInput): string {
   if (!emailContext) return 'No email context.';
   const body = (emailContext.messageBody || emailContext.plainTextBody || 'N/A').slice(0, EMAIL_TEXT_LIMIT);
@@ -616,8 +622,10 @@ async function resolvePayee(
   // No Supplier ID was printed on the form or in the email. AP (or the supplier) may still have named the
   // correct one somewhere in the Intercom conversation or email body — for example a note added after the
   // original packet, when the payee's name alone is ambiguous between two cached suppliers. Only an exact
-  // cache match whose name agrees with the form is honored; the same name-mismatch and default-supplier
-  // stops apply as for a printed ID, and more than one distinct ID in the text is never guessed between.
+  // cache match whose name agrees with the form is honored, and more than one distinct ID in the text is
+  // never guessed between. Deliberately reads plainTextBody (every conversation part, any author), not only
+  // internal AP notes (adminConversationParts) — matching the existing trustedSupplierIds precedent for
+  // supplier invoices (invoice_enrichment.ts), which is also any-author.
   const noteLookup = await resolveSupplierIdFromText(db, emailContext?.plainTextBody, nameOnForm, {
     excludeWorkdayIds: [defaultSupplierWid],
   });
@@ -627,11 +635,8 @@ async function resolvePayee(
       supplierName: noteLookup.supplierName,
       supplierId: noteLookup.supplierId,
       nameOnForm,
-      matchedBy: 'supplier_id',
+      matchedBy: 'supplier_id_conversation',
     };
-  }
-  if (noteLookup.outcome === 'name_mismatch') {
-    return { failure: `Supplier ID ${noteLookup.supplierId} named in the Intercom conversation belongs to ${noteLookup.supplierName || 'a supplier with no name'}, which does not match ${nameOnForm}` };
   }
   if (noteLookup.outcome === 'excluded') {
     return { failure: `Supplier ID ${noteLookup.supplierId} named in the Intercom conversation is the default supplier` };
@@ -639,7 +644,10 @@ async function resolvePayee(
   if (noteLookup.outcome === 'not_cached') {
     return { failure: `Supplier ID ${noteLookup.supplierId} named in the Intercom conversation is not in the supplier cache` };
   }
-  // 'none' or 'ambiguous': fall through to the name-only match below.
+  // 'name_mismatch': the ID is a real cached supplier, just not this payee (someone else's invoice number, a
+  // hotel's Supplier ID, a signature) — not a correction for this packet, so it is noise, not a stop. 'none' and
+  // 'ambiguous' fall through here too. Only excluded/not_cached stop above, since those two IDs most likely were
+  // meant for this payee and a wrong guess must not go to Workday.
 
   const match = await findUniqueSupplierByNameEvidence(db, {
     printedName: nameOnForm,
@@ -700,10 +708,15 @@ export async function decideReimbursement(
   };
 }
 
+function matchedByPhrase(matchedBy: AppliedReimbursement['payee']['matchedBy'], supplierId: string | undefined): string {
+  if (matchedBy === 'supplier_id') return `Supplier ID ${supplierId} and name`;
+  if (matchedBy === 'supplier_id_conversation') return `Supplier ID ${supplierId} named in the Intercom conversation, and name`;
+  return 'exact name';
+}
+
 function supplierReason(reimbursement: AppliedReimbursement): string {
   const { payee } = reimbursement;
-  const matched = payee.matchedBy === 'supplier_id' ? `Supplier ID ${payee.supplierId} and name` : 'exact name';
-  return `Reimbursement payee ${payee.nameOnForm} matched Workday supplier ${payee.supplierId ? `${payee.supplierId} ` : ''}${payee.supplierName} by ${matched}. The merchant on receipts or folios was not used as the supplier.`;
+  return `Reimbursement payee ${payee.nameOnForm} matched Workday supplier ${payee.supplierId ? `${payee.supplierId} ` : ''}${payee.supplierName} by ${matchedByPhrase(payee.matchedBy, payee.supplierId)}. The merchant on receipts or folios was not used as the supplier.`;
 }
 
 /** The invoice the packet stands for, in place of reading the folio as an invoice. One line at the approved amount. */
@@ -821,7 +834,7 @@ export function reimbursementNote(reimbursement: AppliedReimbursement): string {
 export function reimbursementSlackLines(reimbursement: AppliedReimbursement): string[] {
   const { payee } = reimbursement;
   return [
-    `Payee: ${payee.supplierName}${payee.supplierId ? ` (${payee.supplierId})` : ''}, matched by ${payee.matchedBy === 'supplier_id' ? 'Supplier ID and name' : 'name'}`,
+    `Payee: ${payee.supplierName}${payee.supplierId ? ` (${payee.supplierId})` : ''}, matched by ${payee.matchedBy === 'name' ? 'name' : matchedByPhrase(payee.matchedBy, payee.supplierId)}`,
     `Amount: ${reimbursement.amountLabel} from the form's ${reimbursement.totalLabel ?? 'Amount to Pay'}${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
     ...(reimbursement.confirmedByFormMath
       ? ["Check the total first: the reads of the form did not give one agreed total, and the form's own arithmetic confirmed it (the column totals and each column's line items add up)."]
