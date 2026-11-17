@@ -164,16 +164,20 @@ function fullYear(year: string): number {
 /**
  * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026), or a
  * month name with a four-digit year ("Nov 11, 2026", "11th November 2026"). Two-digit years are 20YY. Anything
- * else is null.
+ * else is null. A dot separator (11.11.26) is read the same way only when `dottedDates` is set: dots are also how
+ * day.month.year dates are written outside the US, so only a caller that can accept a month/day reading of a
+ * dotted date opts in.
  */
-export function normalizePrintedDate(value: string | null | undefined): string | null {
+export function normalizePrintedDate(value: string | null | undefined, options: { dottedDates?: boolean } = {}): string | null {
   const text = value?.trim();
   if (!text) return null;
 
   const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return isoCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
 
-  const numeric = text.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
+  const numeric = text.match(options.dottedDates
+    ? /^(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})$/
+    : /^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
   if (numeric) return isoCalendarDate(fullYear(numeric[4]), Number(numeric[1]), Number(numeric[3]));
 
   const monthFirst = text.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})$/i);
