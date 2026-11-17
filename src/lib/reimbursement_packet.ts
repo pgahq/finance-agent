@@ -127,12 +127,15 @@ export function hasReimbursementSignal(
   return SIGNAL.test(text);
 }
 
-// plainTextBody is the source email plus every Intercom conversation part (notes and replies included), so it
-// is preferred over messageBody (just the one message that carried this attachment) — otherwise a note added
-// after the attaching message, such as AP naming the correct Supplier ID, never reaches the packet read.
+// Deliberately still messageBody first, not plainTextBody: a live check on the real incident packet (see PR
+// #275) showed that once a later Intercom note was in this text, the two independent packet reads could each
+// notice or miss it and disagree on payeeSupplierId, sending an otherwise-resolvable packet to manual entry —
+// the opposite of the fix below. resolvePayee reads the full conversation for a trusted Supplier ID directly
+// from emailContext.plainTextBody (resolveSupplierIdFromText), with no model involved, so this function does
+// not need to show the model the conversation for that to work.
 function emailText(emailContext: EmailContextInput): string {
   if (!emailContext) return 'No email context.';
-  const body = (emailContext.plainTextBody || emailContext.messageBody || 'N/A').slice(0, EMAIL_TEXT_LIMIT);
+  const body = (emailContext.messageBody || emailContext.plainTextBody || 'N/A').slice(0, EMAIL_TEXT_LIMIT);
   return `From: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.messageSubject || emailContext.subject || 'N/A'}\nBody: ${body}`;
 }
 

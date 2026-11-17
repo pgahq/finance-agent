@@ -109,7 +109,11 @@ describe('readReimbursementPacket', () => {
     expect(aiResponse.mock.calls[0][0].messages[0].content[0].text).toContain('Subject: Hotel reimbursement');
   });
 
-  it('shows the model the full conversation (plainTextBody), not only the one message that carried the attachment', async () => {
+  it('shows the model only the message that carried the attachment, not the rest of the conversation', async () => {
+    // A later Intercom note (plainTextBody) must not reach the two independent packet reads: a note mentioning a
+    // Supplier ID can be noticed by one read and missed by the other, which disagrees the packet into manual entry
+    // before resolvePayee ever runs. The trusted-note lookup reads the full conversation separately, in code
+    // (resolveSupplierIdFromText), not through the model.
     aiResponse.mockResolvedValue(packet());
     await readReimbursementPacket(attachments, {
       subject: 'Hotel reimbursement',
@@ -117,12 +121,13 @@ describe('readReimbursementPacket', () => {
       plainTextBody: 'Please see the attached form.\n\nAP note: this payee is Supplier ID S-100011.',
     } as never);
     const text = aiResponse.mock.calls[0][0].messages[0].content[0].text;
-    expect(text).toContain('AP note: this payee is Supplier ID S-100011.');
+    expect(text).toContain('Body: Please see the attached form.');
+    expect(text).not.toContain('AP note');
   });
 
-  it('falls back to messageBody when the conversation has no plainTextBody', async () => {
+  it('falls back to plainTextBody when the message has no messageBody of its own', async () => {
     aiResponse.mockResolvedValue(packet());
-    await readReimbursementPacket(attachments, { subject: 'Hotel reimbursement', messageBody: 'Please see the attached form.' } as never);
+    await readReimbursementPacket(attachments, { subject: 'Hotel reimbursement', plainTextBody: 'Please see the attached form.' } as never);
     const text = aiResponse.mock.calls[0][0].messages[0].content[0].text;
     expect(text).toContain('Body: Please see the attached form.');
   });

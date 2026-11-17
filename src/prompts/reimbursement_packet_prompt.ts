@@ -7,7 +7,7 @@ export const ReimbursementPacketSchema = z.object({
   ),
   confidence: z.number().min(0).max(1).describe('Confidence in kind.'),
   payeeName: z.string().nullable().describe('The person to be paid back, as printed on the reimbursement form (or named in the email when the form has no name). Never the merchant on a receipt or folio. Null when not stated.'),
-  payeeSupplierId: z.string().nullable().describe('A Workday Supplier ID (S- followed by digits) printed for the payee on the form, or named anywhere in the email or Intercom conversation text shown to you. Null when none is printed or named.'),
+  payeeSupplierId: z.string().nullable().describe('A Workday Supplier ID (S- followed by digits) printed for the payee on the form or in the email. Null when none is printed.'),
   formAmountToPay: z.string().nullable().describe('The amount the reimbursement form says to pay, exactly as printed: the figure labelled "Amount to Pay", "Total Reimbursement" or "Total to be reimbursed", or on a grid-style expense report the TOTALS row\'s grand total (the "Sum of All Columns" column). Never a receipt or folio total, never computed. Null when the form prints none.'),
   formAmountLabel: z.string().nullable().describe('The words printed beside or above formAmountToPay on the form, copied exactly (for example "TOTALS" or "Sum of All Columns"). Never a label that is not printed on the form. Null when formAmountToPay is null.'),
   emailAmount: z.string().nullable().describe('The dollar amount the email asks AP to pay the payee, exactly as written. Null when the email states none.'),
