@@ -148,6 +148,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedSecondReadOutcome: z.enum(['rejected', 'inconclusive', 'not_lines', 'failed', 'skipped']).nullable().optional().describe('Set by code and never by a model: why a missing-row second read did not change the rows ("rejected" when it found no new row, "inconclusive" when it changed or added rows without closing the gap, "not_lines" when the row that closed the gap was labeled like tax, a balance, a payment, or a finance charge). Null when no second read was needed or its rows were used.'),
 
+  bankingInfoPrinted: z.boolean().nullable().optional().describe('Set by code from the document read and never by a model: true when a supplier invoice document prints bank details a payer would use to send money to the supplier. Null when no document read ran.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
@@ -204,7 +206,18 @@ export const InvoiceEnrichmentSchema = z.object({
 
 });
 
-export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
+type InvoiceEnrichmentSchemaResult = z.infer<typeof InvoiceEnrichmentSchema>;
+
+// The model fills name and workdayId; resolvedName, rejectedDiscountTerm, unverified, and candidateWorkdayId
+// are added in code after matching (see applyPaymentTermsDiscountRule in payment_terms_match.ts).
+export type InvoiceEnrichmentResult = Omit<InvoiceEnrichmentSchemaResult, 'extractedPaymentTerms'> & {
+  extractedPaymentTerms: (NonNullable<InvoiceEnrichmentSchemaResult['extractedPaymentTerms']> & {
+    resolvedName?: string | null;
+    rejectedDiscountTerm?: string | null;
+    unverified?: boolean;
+    candidateWorkdayId?: string | null;
+  }) | null;
+};
 
 // The matching pass sees the OCR JSON, not the documents, and returns only matching, coding, and payment-terms resolution.
 export const InvoiceMatchingSchema = InvoiceEnrichmentSchema.pick({
@@ -336,8 +349,9 @@ Always verify the company (buyer/recipient) assignment:
 
 If the invoice document extraction includes \`extractedPaymentTerms\`:
 
-1. Use the **findPaymentTerms** tool with that name to find the best matching Workday payment terms entry.
-2. Populate \`extractedPaymentTerms\` with the extracted name unchanged and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
+1. Use the **findPaymentTerms** tool with that name to find the best matching Workday payment terms entry. Results come back already ranked: an exact match first, then plain terms (such as "Net 30"), then terms that carry a discount percentage. Take the first result unless it clearly names different terms than the invoice.
+2. Never choose a payment term whose name contains a percentage discount (for example "2% 10 Net 30") unless the extracted payment terms text itself shows a discount percentage. A printed "30 NET" or "Net 30" is plain Net 30, not a discount term. When no plain term fits, set \`workdayId\` to null instead of choosing a discount term.
+3. Populate \`extractedPaymentTerms\` with the extracted name unchanged and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
 
 If the extraction has no payment terms, omit \`extractedPaymentTerms\` entirely.
 

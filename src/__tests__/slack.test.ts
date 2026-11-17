@@ -344,6 +344,17 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Payment Terms* → Net 30');
   });
 
+  it('shows the Workday payment term when it reads differently from the printed one, and escapes it', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-470102',
+      extracted: { paymentTerms: '30 NET (no Workday match; "<!here> 3% 30 Net 30" was not used because the invoice shows no discount)' },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Payment Terms* → 30 NET (no Workday match; "&lt;!here&gt; 3% 30 Net 30" was not used');
+  });
+
   it('marks a printed due date that was not sent to Workday and lists why under fallbacks', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

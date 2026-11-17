@@ -274,7 +274,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     const linked = extracted.purchaseOrderNotLinked ? ' · coded from PO, not linked to PO lines' : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${line}${source}${linked}`);
   }
-  if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
+  if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${escapeSlackMrkdwn(extracted.paymentTerms)}`);
 
   const assigneeName = typeof details.assigneeName === 'string' ? details.assigneeName : undefined;
   const assigneeEmail = typeof details.assigneeEmail === 'string' ? details.assigneeEmail : undefined;
@@ -959,7 +959,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     const source = extracted.invoicePurchaseOrderNumber ? ` (from email; invoice shows ${extracted.invoicePurchaseOrderNumber})` : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${source}${lineSuffix}`);
   }
-  if (extracted.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
+  if (extracted.paymentTerms) changeLines.push(`*Payment Terms* → ${escapeSlackMrkdwn(extracted.paymentTerms)}`);
   if (suggestedCostCenters?.length) {
     const formatted = suggestedCostCenters.map(cc => cc.code ? `${cc.name} (${cc.code})` : cc.name).join(', ');
     changeLines.push(`*Cost Center* → ${formatted}`);

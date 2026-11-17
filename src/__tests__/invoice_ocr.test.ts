@@ -17,6 +17,9 @@ jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
 
 jest.mock('../lib/database.js', () => ({
   getDatabaseConnection: jest.fn().mockResolvedValue({ query: jest.fn().mockResolvedValue([]) }),
+  getDocumentsByWorkdayIds: jest.fn().mockResolvedValue([
+    { workday_id: 'Immediate', content: 'Payment Terms: Due on receipt', metadata: { name: 'Due on receipt' } },
+  ]),
 }));
 
 jest.mock('../lib/reference_ids.js', () => ({
@@ -78,6 +81,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedPriorPayments: null,
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: null,
   extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
@@ -132,6 +136,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedPriorPayments: [],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: '',
   extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
@@ -818,6 +823,16 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedSecondReadOutcome).toBeNull();
       });
 
+      it('keeps the banking-info flag when only the second read saw the bank details', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows, { bankingInfoPrinted: false }))
+          .mockResolvedValueOnce(responseFor(supin472322Rows, { bankingInfoPrinted: true }));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.bankingInfoPrinted).toBe(true);
+      });
+
       it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
         let now = 1_000_000;
         const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
@@ -1043,6 +1058,7 @@ describe('invoice OCR pass', () => {
         extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
         extractedPurchaseOrderNumber: 'PO-414007',
         extractedAccountNumber: 'AC-1033562',
+        bankingInfoPrinted: true,
         extractedServicePeriod: 'Sept 28 - Oct 2',
         invoiceLineQuantityDisplayed: true,
         extractedInvoiceLines: ocrResult.extractedInvoiceLines,
@@ -1054,6 +1070,18 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment({ ...matchingResult, extractedPaymentTerms: null }, ocrResult).extractedPaymentTerms)
         .toEqual({ name: 'Due on receipt', workdayId: null });
       expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, extractedPaymentTerms: null }).extractedPaymentTerms).toBeNull();
+    });
+
+    it('carries the banking-info flag from the document read and leaves it null when none ran', () => {
+      expect(mergeInvoiceEnrichment(matchingResult, ocrResult).bankingInfoPrinted).toBe(true);
+      expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).bankingInfoPrinted).toBeNull();
+    });
+
+    it('asks the document read for a banking-info flag without copying the bank numbers', () => {
+      expect(invoiceOcrPrompt).toContain('bankingInfoPrinted');
+      expect(invoiceOcrPrompt).toContain('Do not copy any bank number');
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
     });
 
     it('leaves document fields empty when no document was read', () => {
@@ -1121,11 +1149,27 @@ describe('invoice OCR pass', () => {
       ['2026-11-11-08:00', null],
       ['11/11-26', null],
       ['05.11.2026', null],
+      ['11.10.26', null],
       ['Mayday 11 2026', null],
       ['Novemberish 11, 2026', null],
       ['Nov 11, 26', null],
     ])('normalizes the printed date %s to %s', (printed, expected) => {
       expect(normalizePrintedDate(printed)).toBe(expected);
+    });
+
+    it.each([
+      ['11.10.26', '2026-11-10'],
+      ['11.10.2026', '2026-11-10'],
+      ['1.5.26', '2026-01-05'],
+      ['05.11.2026', '2026-05-11'],
+      ['11/10/2026', '2026-11-10'],
+      ['11-10-26', '2026-11-10'],
+      ['11.11-26', null],
+      ['13.01.26', null],
+      ['2.30.26', null],
+      ['2026.11.10', null],
+    ])('reads the printed date %s as %s when dotted dates are allowed', (printed, expected) => {
+      expect(normalizePrintedDate(printed, { dottedDates: true })).toBe(expected);
     });
 
     it('asks for an explicitly printed due date only, with the IBS example', () => {
@@ -1210,7 +1254,10 @@ describe('invoice OCR pass', () => {
       expect(matchingContent[0].text).toContain('Matching Workday purchase order PO-414007');
       expect(matchingContent[0].text).toContain('Subject: Invoice 401');
 
-      expect(result).toEqual(mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)));
+      expect(result).toEqual({
+        ...mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)),
+        extractedPaymentTerms: { name: 'Due on receipt', workdayId: 'Immediate', resolvedName: 'Due on receipt' },
+      });
     });
 
     it('throws when OCR fails and never calls the matching model', async () => {

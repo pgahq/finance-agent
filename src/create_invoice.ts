@@ -24,6 +24,7 @@ import {
   formatPoLineReviewNotes,
   formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
+  formatBankingInfoNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
   formatRepeatedLineNotes,
@@ -33,6 +34,7 @@ import {
   formatWorkQueueAssigneeNotes,
   type InvoiceAttachmentRole,
 } from './lib/invoice_enrichment.js';
+import { describePaymentTerms } from './lib/payment_terms_match.js';
 import {
   clusterMaxReceivedAt,
   isInvoiceAttachmentClusteringEnabled,
@@ -1531,7 +1533,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1647,7 +1649,7 @@ async function processInvoiceCluster(
           purchaseOrderSource: 'conversation',
           invoicePurchaseOrderNumber: enrichmentPoNumber,
         } : {}),
-        paymentTerms: result.extractedPaymentTerms?.name,
+        paymentTerms: result.extractedPaymentTerms ? describePaymentTerms(result.extractedPaymentTerms) : undefined,
       },
       lineCount: finalLines.length,
       ...(lineReview.length ? { lineReview } : {}),
@@ -1828,6 +1830,7 @@ async function processInvoiceCluster(
           paymentTermsId,
           attachments: submitAttachments,
           ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+          ...(result.bankingInfoPrinted ? { bankingInfoIncluded: true } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
         const updateSnapshotSaved = await snapshotAgentWrite(context, {
@@ -1905,6 +1908,7 @@ async function processInvoiceCluster(
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
+      ...(result.bankingInfoPrinted ? { bankingInfoIncluded: true } : {}),
       ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
       ...(reimbursement ? { keepSupplier: true } : {}),

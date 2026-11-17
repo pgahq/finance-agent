@@ -272,6 +272,9 @@ function comparableId(value: string | null): string | null {
   return value?.match(SUPPLIER_ID_PATTERN)?.[0].toUpperCase() ?? null;
 }
 
+// A form is filled in by the person being paid, who may write 11.10.26. Both reads and the invoice date use this one reading.
+const formDateOf = (packet: Pick<ReimbursementPacket, 'formDate'>): string | null => normalizePrintedDate(packet.formDate, { dottedDates: true });
+
 const isBlank = (value: string | null | undefined): boolean => !value?.trim();
 
 interface Disagreement {
@@ -299,7 +302,7 @@ function disagreements(first: ReimbursementPacket, second: ReimbursementPacket, 
   } else if (firstEmailCents !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
     found.push({ phrase: "whether the email's amount is a limit", field: 'emailAmount' });
   }
-  if (normalizePrintedDate(first.formDate) !== normalizePrintedDate(second.formDate)) found.push({ phrase: 'the form date' });
+  if (formDateOf(first) !== formDateOf(second)) found.push({ phrase: 'the form date' });
   return found;
 }
 
@@ -640,7 +643,7 @@ export async function decideReimbursement(
 
   // The invoice number is built from the supplier name and this date. Without it the draft has no number, and a
   // re-trigger of the conversation would create a second draft to the same person.
-  const invoiceDate = normalizePrintedDate(packet.formDate);
+  const invoiceDate = formDateOf(packet);
   if (!invoiceDate) return manual(packet, 'the reimbursement form prints no readable date, so the invoice would have no number to stop a duplicate');
 
   const totalLabel = packet.confirmedByFormMath?.label ?? payableTotalLabel(packet.formAmountLabel);
@@ -686,6 +689,7 @@ export function reimbursementOcr(reimbursement: AppliedReimbursement): InvoiceOc
     extractedPartialPayment: null,
     extractedPriorPayments: null,
     extractedPurchaseOrderNumber: null,
+    bankingInfoPrinted: false,
     extractedAccountNumber: null,
     extractedSupplierReference: null,
     extractedSupplierReferenceKind: null,

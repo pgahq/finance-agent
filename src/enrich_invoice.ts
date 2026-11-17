@@ -25,11 +25,13 @@ import {
   formatPoLineReviewNotes,
   formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
+  formatBankingInfoNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import { describePaymentTerms } from './lib/payment_terms_match.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
@@ -650,7 +652,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -702,6 +704,7 @@ async function processInvoice(
         resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
         paymentTermsId,
         ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+        ...(result.bankingInfoPrinted ? { bankingInfoIncluded: true } : {}),
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
@@ -730,7 +733,8 @@ async function processInvoice(
       await annotateSupplierInvoice(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         notes: buildNotes([]),
-        memo
+        memo,
+        ...(result.bankingInfoPrinted ? { bankingInfoIncluded: true } : {}),
       });
     }
 
@@ -785,7 +789,7 @@ async function processInvoice(
           && invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== emailPurchaseOrderNumber
           ? { invoicePurchaseOrderNumber }
           : {}),
-        paymentTerms: result.extractedPaymentTerms?.name,
+        paymentTerms: result.extractedPaymentTerms ? describePaymentTerms(result.extractedPaymentTerms) : undefined,
       },
       poLineCount: poLines?.length,
       ...(chargeCheck.length || fallbacks.chargeReconciliationLabels?.length
