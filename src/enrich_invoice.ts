@@ -69,7 +69,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -359,6 +359,9 @@ async function processInvoice(
       freightLabel: result.extractedFreightLabel,
       taxAmount: result.extractedTaxAmount,
       poLines: canModifyInvoice && Boolean(submitSupplierWID) && !poClosedForInvoicing ? poLines : undefined,
+      // Payroll or employment tax is coded like its sibling rows: never pinned to a PO service line, even a
+      // long label (`Employer Payroll Taxes`) that would otherwise satisfy the matcher's length guard.
+      excludeFromMatching: line => isPayrollTaxCharge(line.description, { lines: payrollTaxCharges.lines, poLines }),
     });
     if (placedCharges.placed.length) debug('Placed on PO service lines', placedCharges.placed);
     const printedLines = placedCharges.lines;

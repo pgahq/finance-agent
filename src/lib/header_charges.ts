@@ -57,6 +57,13 @@ export function placeChargesOnPoServiceLines(input: {
   freightLabel?: string | null;
   taxAmount?: string | null;
   poLines?: PurchaseOrderLine[];
+  /**
+   * True for a row that must never become a PO service-line pinning candidate (other rows can still name a
+   * line). Payroll or employment tax is coded like its sibling rows, with no special PO pinning, even when its
+   * printed label (`Employer Payroll Taxes`) is long enough to otherwise satisfy the matcher's length guard
+   * (see `isPayrollTaxCharge`); a short label (`Taxes`, `FICA`) already fails that guard on its own.
+   */
+  excludeFromMatching?: (line: ExtractedInvoiceLine) => boolean;
 }): PlacedPoServiceCharges {
   const unchanged: PlacedPoServiceCharges = {
     lines: input.lines,
@@ -74,9 +81,13 @@ export function placeChargesOnPoServiceLines(input: {
     return { charge, cents: amount != null && amount > 0 ? toCents(amount) : undefined };
   });
   const rowAmounts = input.lines.map(line => signedChargeLineAmount(line));
-  // Credits and rows with no amount are never placed, and a charge equal to the header tax restates it.
+  // Credits and rows with no amount are never placed, a charge equal to the header tax restates it, and an
+  // excluded row (payroll tax) never offers itself as a candidate, though it can still occupy a PO line through
+  // the ordinary item-line match elsewhere.
   const candidates = [
-    ...input.lines.map((line, index) => ((rowAmounts[index] ?? 0) > 0 ? line.description : undefined)),
+    ...input.lines.map((line, index) => (
+      (rowAmounts[index] ?? 0) > 0 && !input.excludeFromMatching?.(line) ? line.description : undefined
+    )),
     ...charges.map(({ charge, cents }) => (cents != null && cents !== taxCents ? charge.label : undefined)),
   ];
   const matches = uniqueServiceLineMatches(candidates, input.poLines);
@@ -299,7 +310,8 @@ export function placePayrollTaxCharges(input: {
   // The amount moved off the header field onto its own line, kept even after headerTaxCents is zeroed below, so a
   // later other charge of the same amount is recognized as the same OCR read repeated under a different label
   // (`FICA` in Tax_Amount, `Employer Payroll Taxes` as an other charge) and dropped rather than doubled onto the
-  // lines (see dedupe below).
+  // lines (see dedupe below). Consumed by at most one matching charge: a second, later charge of that same
+  // amount is kept as a distinct payroll tax rather than assumed to be yet another copy of the same row.
   let clearedHeaderTaxCents: number | undefined;
 
   // The main tax field itself can be a misread payroll or employment tax row (OCR put a bare "Taxes" straight
@@ -328,9 +340,12 @@ export function placePayrollTaxCharges(input: {
     }
     // A charge that merely restates the (now resolved) header tax figure, or repeats the amount just moved off
     // the header field onto a line, is a duplicate OCR read of the same row, not a second payroll tax charge:
-    // drop it rather than leaving it to double onto the lines or surface as an unexplained charge.
+    // drop it rather than leaving it to double onto the lines or surface as an unexplained charge. Only the
+    // first charge of the cleared amount is treated this way, so a later, genuinely distinct payroll tax that
+    // happens to match it in size is still added as its own line.
     if (restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents) || cents === clearedHeaderTaxCents) {
       droppedOrRepeatedAny = true;
+      clearedHeaderTaxCents = undefined;
       continue;
     }
     const chargeTokens = labelTokenSet(charge.label);

@@ -2061,6 +2061,34 @@ describe('create_invoice', () => {
       expect(submitArgs.finalLines.map((line: any) => line.description)).toContain('Taxes');
     });
 
+    it('does not pin a payroll tax charge to a PO service line even when its long printed label matches one', async () => {
+      // Unlike the bare "Taxes" row above, "Employer Payroll Taxes" is long enough to satisfy the service-line
+      // matcher's own length guard, so a PO service line printed with the identical description would otherwise
+      // match it. The exclusion in placeChargesOnPoServiceLines has to stop that, not the matcher's length check.
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-900002',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-900002-1', purchaseOrderDocumentNumber: 'PO-900002', description: 'Employer Payroll Taxes', extendedAmount: 500 }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedPurchaseOrderNumber: 'PO-900002',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: [{ label: 'Employer Payroll Taxes', amount: '$500.00' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-service-line/invoice.pdf')] } as any);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      const taxesCandidate = candidates.find((line: any) => line.description === 'Employer Payroll Taxes');
+      expect(taxesCandidate).toBeDefined();
+      expect(taxesCandidate.pinnedPurchaseOrderLineId).toBeUndefined();
+    });
+
     it('does not repeat a Taxes row that the extractor returned both as a line and as a charge', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
