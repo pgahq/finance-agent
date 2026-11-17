@@ -364,9 +364,9 @@ async function processInvoice(
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
       extractedFreightAmount: resolvedFreightAmount,
-      extractedTaxAmount: resolvedTaxAmount,
+      extractedTaxAmount: resolvedHeaderTaxAmount,
       freightCleared: headerFreightCleared,
-      taxCleared: headerTaxCleared,
+      taxCleared: resolvedHeaderTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
     } = resolveHeaderChargeAmounts({
@@ -376,6 +376,10 @@ async function processInvoice(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(printedLines).freightAmountFromLines : undefined,
     });
+    // The main Tax_Amount field itself can be a misread payroll tax (placePayrollTaxCharges already moved it onto
+    // the lines above); clear it here too so it never reaches header tax, the same as a printed $0.00 would.
+    const headerTaxCleared = resolvedHeaderTaxCleared || payrollTaxCharges.taxCleared === true;
+    const resolvedTaxAmount = headerTaxCleared ? undefined : resolvedHeaderTaxAmount;
     // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
     // line total that is not quantity x unit price may have a misread total; each is read that way only when
     // that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the

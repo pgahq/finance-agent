@@ -28,7 +28,7 @@ import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, sup
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooFreeRow, mobileKangarooHeader, mobileKangarooRows } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
-import { payrollRechargeHeader, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
+import { payrollRechargeHeader, payrollRechargePoLine, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
 
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
@@ -2006,6 +2006,59 @@ describe('create_invoice', () => {
       expect(submitArgs.taxCleared).toBe(true);
       expect(submitArgs.finalLines).toHaveLength(6);
       expect(slack.notifyResult.mock.calls[0][3].chargeCheck ?? []).toEqual([]);
+    });
+
+    it('clears a payroll Taxes amount the extractor read straight into the main Tax_Amount field', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedTaxAmount: '$500.00',
+        extractedTaxLabel: 'Taxes',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-main-tax/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines.map((line: any) => [line.description, line.extendedAmount])).toEqual([
+        ['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500],
+      ]);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([keptMessage]);
+    });
+
+    it('moves a payroll charge onto the lines as an ordinary row when a real PO is loaded, not pinned to a tax-specific service line', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-900001',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: payrollRechargePoLine.purchaseOrderLineId, purchaseOrderDocumentNumber: payrollRechargePoLine.purchaseOrderDocumentNumber, quantity: 1, unitCost: 5400, extendedAmount: 5400 }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...payrollRechargeHeader,
+        extractedPurchaseOrderNumber: 'PO-900001',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: payrollRechargeSiblingRows,
+        extractedOtherCharges: [payrollTaxesCharge],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-payroll-po/invoice.pdf')] } as any);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      const taxesCandidate = candidates.find((line: any) => line.description === 'Taxes');
+      expect(taxesCandidate).toBeDefined();
+      expect(taxesCandidate.pinnedPurchaseOrderLineId).toBeUndefined();
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.finalLines.map((line: any) => line.description)).toContain('Taxes');
     });
 
     it('does not repeat a Taxes row that the extractor returned both as a line and as a charge', async () => {

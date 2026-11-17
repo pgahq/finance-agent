@@ -145,8 +145,11 @@ export function isTaxLikeChargeLabel(label: string | null | undefined): boolean 
     && !tokens.some(token => TAX_METADATA_WORDS.has(token));
 }
 
-// Words that make a tax row payroll or employment tax whatever else surrounds it.
-const PAYROLL_TAX_WORDS = new Set(['payroll', 'employer', 'employers', 'employment', 'fica', 'futa', 'suta']);
+// Acronyms that are payroll tax on their own, with no "tax" word needed (`FICA`, not `FICA Processing Fee`).
+const PAYROLL_TAX_ACRONYMS = new Set(['fica', 'futa', 'suta']);
+// Words that make a *tax-like* label payroll or employment tax, but are not tax on their own: `Payroll Processing
+// Fee` and `Employer Service Charge` must stay excluded, so these only count alongside a TAX_CORE_WORDS word.
+const PAYROLL_TAX_QUALIFIER_WORDS = new Set(['payroll', 'employer', 'employers', 'employment', 'unemployment']);
 // A qualifier that names sales, use, or another transaction tax, so the row is not a bare `Tax` or `Taxes`.
 const TRANSACTION_TAX_QUALIFIERS = new Set([
   'sales', 'use', 'vat', 'gst', 'hst', 'pst', 'qst', 'state', 'county', 'city', 'local', 'provincial', 'municipal', 'excise',
@@ -199,11 +202,17 @@ export function isPayrollRechargeInvoice(context: PayrollTaxContext): boolean {
 /**
  * Header Tax_Amount is only for sales and use tax. A printed tax row is payroll or employment tax when its label
  * says so (`Payroll Taxes`, `Employer Taxes`, `FICA`), or when it is a bare tax label (`Taxes`, `Tax`, no sales,
- * use, VAT, GST, or similar qualifier) on an invoice that bills payroll cost back to PGA.
+ * use, VAT, GST, or similar qualifier) on an invoice that bills payroll cost back to PGA. Tax metadata or
+ * documentation (`Payroll Tax ID`, `Employer Tax Exempt`) and a payroll-worded fee with no tax word
+ * (`Payroll Processing Fee`, `Employer Service Charge`) are never payroll tax.
  */
 export function isPayrollTaxCharge(label: string | null | undefined, context: PayrollTaxContext): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
-  if (tokens.some(token => PAYROLL_TAX_WORDS.has(token))) return true;
+  if (tokens.length === 0 || tokens.some(token => TAX_METADATA_WORDS.has(token))) return false;
+  if (tokens.some(token => PAYROLL_TAX_ACRONYMS.has(token))) return true;
+  const hasPayrollQualifier = tokens.some(token => PAYROLL_TAX_QUALIFIER_WORDS.has(token));
+  const hasCoreTaxWord = tokens.some(token => TAX_CORE_WORDS.has(token));
+  if (hasPayrollQualifier && hasCoreTaxWord) return true;
   if (!isTaxLikeChargeLabel(label) || tokens.some(token => TRANSACTION_TAX_QUALIFIERS.has(token))) return false;
   return isPayrollRechargeInvoice(context);
 }
@@ -214,6 +223,8 @@ export interface PlacedPayrollTaxCharges {
   otherCharges: PrintedCharge[] | null | undefined;
   /** Rows created from printed charges, so row counts taken before placement can be corrected. */
   addedLines: number;
+  /** Set when the main Tax_Amount field itself held payroll tax, so the caller must clear it before submitting. */
+  taxCleared?: boolean;
   /** Amount-check sentence naming the charges kept on the lines. */
   message?: string;
 }
@@ -222,10 +233,21 @@ function labelTokenSet(text: string | null | undefined): Set<string> {
   return new Set((normalizeLabel(text) ?? '').split(' ').filter(token => token.length >= 3));
 }
 
+function lineLabelTokenSet(line: { description?: string | null; descriptionCells?: string[] | null }): Set<string> {
+  return labelTokenSet([line.description, ...(line.descriptionCells ?? [])].filter(Boolean).join(' '));
+}
+
+function payrollTaxLine(label: string, cents: number): ExtractedInvoiceLine {
+  return { description: label, quantity: null, unitCost: null, totalPrice: (cents / 100).toFixed(2), hasDiscount: null };
+}
+
 /**
  * A printed tax row that is payroll or employment tax is part of what the invoice bills, not sales or use tax, so
- * it becomes an invoice line instead of reaching header Tax_Amount (see isPayrollTaxCharge). A row that repeats the
- * header tax, a credit or unparseable amount, and a charge an existing line already shows stay where they were.
+ * it becomes an invoice line instead of reaching header Tax_Amount (see isPayrollTaxCharge). This also covers OCR
+ * misreading the payroll tax straight into the main Tax_Amount field instead of a line or other charge; the caller
+ * must then clear its own tax amount and label (see the returned `taxCleared`). A row that repeats the header tax,
+ * a credit or unparseable amount, and a charge an existing line already shows stay where they were, and a charge
+ * that duplicates one already placed from this same invoice is dropped rather than doubled onto the lines.
  * Runs before applyPrintedTaxCharges, so the gap arithmetic never decides where the row goes.
  */
 export function placePayrollTaxCharges(input: {
@@ -235,45 +257,68 @@ export function placePayrollTaxCharges(input: {
   taxLabel?: string | null;
   poLines?: PayrollTaxContext['poLines'];
 }): PlacedPayrollTaxCharges {
-  const unchanged: PlacedPayrollTaxCharges = { lines: input.lines, otherCharges: input.otherCharges, addedLines: 0 };
-  if (!input.otherCharges?.length) return unchanged;
-
   const context: PayrollTaxContext = { lines: input.lines, poLines: input.poLines };
-  const headerTaxCents = toCents(chargeAmount(input.tax) ?? 0);
-  const lineEntries = input.lines.map(line => ({
-    tokens: labelTokenSet(line.description),
-    cents: Math.abs(toCents(signedChargeLineAmount(line) ?? 0)),
+  // Signed cents, so a credit line never looks like it already covers a positive payroll charge of the same size.
+  const knownAmounts: Array<{ tokens: Set<string>; cents: number }> = input.lines.map(line => ({
+    tokens: lineLabelTokenSet(line),
+    cents: toCents(signedChargeLineAmount(line) ?? 0),
   }));
+  const isAlreadyKnown = (tokens: Set<string>, cents: number) => knownAmounts.some(
+    entry => entry.cents === cents && [...tokens].some(token => entry.tokens.has(token))
+  );
+
+  let lines = input.lines;
+  let headerTaxCents = toCents(chargeAmount(input.tax) ?? 0);
   const placed: TaxCandidate[] = [];
+  let taxCleared = false;
+
+  // The main tax field itself can be a misread payroll or employment tax row (OCR put a bare "Taxes" straight
+  // into extractedTaxAmount instead of leaving it a line or other charge). Header Tax_Amount is only sales/use tax.
+  if (headerTaxCents > 0 && isPayrollTaxCharge(input.taxLabel, context)) {
+    const label = input.taxLabel || 'Taxes';
+    const tokens = labelTokenSet(label);
+    if (!isAlreadyKnown(tokens, headerTaxCents)) {
+      lines = [...lines, payrollTaxLine(label, headerTaxCents)];
+      placed.push({ label, cents: headerTaxCents });
+      knownAmounts.push({ tokens, cents: headerTaxCents });
+    }
+    taxCleared = true;
+    headerTaxCents = 0;
+  }
+
   const remaining: PrintedCharge[] = [];
-  const repeated: PrintedCharge[] = [];
-  for (const charge of input.otherCharges) {
+  let droppedOrRepeatedAny = false;
+  for (const charge of input.otherCharges ?? []) {
     const amount = parseCanonicalChargeAmount(charge.amount);
     const cents = amount != null && amount > 0 ? toCents(amount) : undefined;
-    if (cents == null || !isPayrollTaxCharge(charge.label, context) || restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents)) {
+    if (cents == null || !isPayrollTaxCharge(charge.label, context)) {
       remaining.push(charge);
       continue;
     }
+    // A charge that merely restates the (now resolved) header tax figure is a duplicate OCR read of the same row,
+    // not a second payroll tax charge: drop it rather than leaving it to surface as an unexplained charge.
+    if (restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents)) {
+      droppedOrRepeatedAny = true;
+      continue;
+    }
     const chargeTokens = labelTokenSet(charge.label);
-    const alreadyLine = lineEntries.some(entry => entry.cents === cents && [...chargeTokens].some(token => entry.tokens.has(token)));
-    if (alreadyLine) repeated.push(charge);
-    else placed.push({ label: charge.label, cents });
+    if (isAlreadyKnown(chargeTokens, cents)) {
+      droppedOrRepeatedAny = true;
+      continue;
+    }
+    placed.push({ label: charge.label, cents });
+    knownAmounts.push({ tokens: chargeTokens, cents });
+    lines = [...lines, payrollTaxLine(charge.label, cents)];
   }
-  if (placed.length === 0 && repeated.length === 0) return unchanged;
+  if (placed.length === 0 && !droppedOrRepeatedAny && !taxCleared) {
+    return { lines: input.lines, otherCharges: input.otherCharges, addedLines: 0 };
+  }
 
   return {
-    lines: [
-      ...input.lines,
-      ...placed.map(candidate => ({
-        description: candidate.label,
-        quantity: null,
-        unitCost: null,
-        totalPrice: (candidate.cents / 100).toFixed(2),
-        hasDiscount: null,
-      })),
-    ],
-    otherCharges: remaining,
+    lines,
+    otherCharges: input.otherCharges == null ? input.otherCharges : remaining,
     addedLines: placed.length,
+    ...(taxCleared && { taxCleared: true }),
     ...(placed.length && {
       message: `Kept ${describeCharges(placed)} on the invoice lines instead of header Tax_Amount: header tax is only sales and use tax, and ${placed.length > 1 ? 'these read' : 'this reads'} as payroll or employment tax.`,
     }),

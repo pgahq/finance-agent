@@ -895,6 +895,17 @@ describe('payroll tax is not header tax', () => {
       expect(isPayrollTaxCharge('Fuel Surcharge', siblingContext)).toBe(false);
       expect(isPayrollTaxCharge(null, siblingContext)).toBe(false);
     });
+
+    it.each(['Unemployment Tax', 'FUTA', 'SUTA', 'State Unemployment Tax'])(
+      'treats %s as payroll tax on any invoice', (label) => expect(isPayrollTaxCharge(label, {})).toBe(true)
+    );
+
+    it('never treats a payroll-worded fee or metadata row as payroll tax, even on a payroll recharge', () => {
+      expect(isPayrollTaxCharge('Payroll Processing Fee', siblingContext)).toBe(false);
+      expect(isPayrollTaxCharge('Employer Service Charge', siblingContext)).toBe(false);
+      expect(isPayrollTaxCharge('Payroll Tax ID', siblingContext)).toBe(false);
+      expect(isPayrollTaxCharge('Employer Tax Exempt', siblingContext)).toBe(false);
+    });
   });
 
   describe('placePayrollTaxCharges', () => {
@@ -976,13 +987,31 @@ describe('payroll tax is not header tax', () => {
       expect(placed.addedLines).toBe(1);
     });
 
-    it('leaves a charge that restates the header tax, a rate-only row, and a credit alone', () => {
-      expect(placePayrollTaxCharges({ ...base, tax: '$500.00', taxLabel: 'Taxes', otherCharges: [payrollTaxesCharge] }).addedLines).toBe(0);
+    it('leaves a rate-only row and a credit alone', () => {
       const rate = { label: 'Taxes 7.65%', amount: '7.65%' };
       const credit = { label: 'Taxes', amount: '-$20.00' };
       const unchanged = placePayrollTaxCharges({ ...base, otherCharges: [rate, credit] });
       expect(unchanged.lines).toBe(base.lines);
       expect(unchanged.otherCharges).toEqual([rate, credit]);
+    });
+
+    it('clears a payroll tax read into the main Tax_Amount field and drops a duplicate charge that restates it', () => {
+      // OCR put the payroll "Taxes" row straight into extractedTaxAmount instead of a line or a charge; a second,
+      // identical copy also showed up in extractedOtherCharges (a common duplicate OCR read of the same totals row).
+      const placed = placePayrollTaxCharges({ ...base, tax: '$500.00', taxLabel: 'Taxes', otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.taxCleared).toBe(true);
+      expect(placed.addedLines).toBe(1);
+      expect(placed.lines.at(-1)).toEqual({ description: 'Taxes', quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null });
+      expect(placed.otherCharges).toEqual([]);
+    });
+
+    it('clears the main Tax_Amount field without duplicating a payroll tax already shown as a line', () => {
+      const placed = placePayrollTaxCharges({ ...base, lines: payrollRechargeRows, tax: '$500.00', taxLabel: 'Taxes', otherCharges: null });
+
+      expect(placed.taxCleared).toBe(true);
+      expect(placed.addedLines).toBe(0);
+      expect(placed.lines).toEqual(payrollRechargeRows);
     });
 
     it('does nothing for a bare Taxes row on an invoice with no payroll signal', () => {
@@ -996,6 +1025,30 @@ describe('payroll tax is not header tax', () => {
 
     it('does nothing without printed other charges', () => {
       expect(placePayrollTaxCharges({ ...base, otherCharges: null })).toEqual({ lines: base.lines, otherCharges: null, addedLines: 0 });
+    });
+
+    it('matches a charge an existing line already shows by its description cells, not just its own description', () => {
+      const lines = [...payrollRechargeSiblingRows, { description: 'Employer charges', descriptionCells: ['Taxes'], quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null }];
+      const placed = placePayrollTaxCharges({ ...base, lines, otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.addedLines).toBe(0);
+      expect(placed.lines).toEqual(lines);
+    });
+
+    it('does not let a negative existing line suppress a positive payroll charge of the same size', () => {
+      const lines = [...payrollRechargeSiblingRows, { description: 'Taxes', quantity: null, unitCost: null, totalPrice: '-500.00', hasDiscount: null }];
+      const placed = placePayrollTaxCharges({ ...base, lines, otherCharges: [payrollTaxesCharge] });
+
+      expect(placed.addedLines).toBe(1);
+      expect(placed.lines.at(-1)).toEqual({ description: 'Taxes', quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null });
+    });
+
+    it('adds only one line for two duplicate copies of the same payroll charge', () => {
+      const placed = placePayrollTaxCharges({ ...base, otherCharges: [payrollTaxesCharge, { ...payrollTaxesCharge }] });
+
+      expect(placed.addedLines).toBe(1);
+      expect(placed.lines.filter(line => line.description === 'Taxes')).toHaveLength(1);
+      expect(placed.otherCharges).toEqual([]);
     });
   });
 
