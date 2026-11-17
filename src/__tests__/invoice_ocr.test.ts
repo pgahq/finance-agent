@@ -1129,10 +1129,6 @@ describe('invoice OCR pass', () => {
       ['11/11/2026', '2026-11-11'],
       ['1/5/26', '2026-01-05'],
       ['11-11-26', '2026-11-11'],
-      ['11.10.26', '2026-11-10'],
-      ['11.10.2026', '2026-11-10'],
-      ['1.5.26', '2026-01-05'],
-      ['05.11.2026', '2026-05-11'],
       ['Nov 11, 2026', '2026-11-11'],
       ['November 11 2026', '2026-11-11'],
       ['11 Nov 2026', '2026-11-11'],
@@ -1149,15 +1145,28 @@ describe('invoice OCR pass', () => {
       ['2026-11-11Tgarbage', null],
       ['2026-11-11-08:00', null],
       ['11/11-26', null],
-      ['11.11-26', null],
-      ['13.01.26', null],
-      ['2.30.26', null],
-      ['2026.11.10', null],
+      ['05.11.2026', null],
+      ['11.10.26', null],
       ['Mayday 11 2026', null],
       ['Novemberish 11, 2026', null],
       ['Nov 11, 26', null],
     ])('normalizes the printed date %s to %s', (printed, expected) => {
       expect(normalizePrintedDate(printed)).toBe(expected);
+    });
+
+    it.each([
+      ['11.10.26', '2026-11-10'],
+      ['11.10.2026', '2026-11-10'],
+      ['1.5.26', '2026-01-05'],
+      ['05.11.2026', '2026-05-11'],
+      ['11/10/2026', '2026-11-10'],
+      ['11-10-26', '2026-11-10'],
+      ['11.11-26', null],
+      ['13.01.26', null],
+      ['2.30.26', null],
+      ['2026.11.10', null],
+    ])('reads the printed date %s as %s when dotted dates are allowed', (printed, expected) => {
+      expect(normalizePrintedDate(printed, { dottedDates: true })).toBe(expected);
     });
 
     it('asks for an explicitly printed due date only, with the IBS example', () => {
