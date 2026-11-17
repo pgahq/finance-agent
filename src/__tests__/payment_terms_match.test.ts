@@ -193,9 +193,9 @@ describe('describePaymentTerms and notes', () => {
     );
   });
 
-  it('says the match could not be confirmed safe', () => {
+  it('says the Workday term name could not be read', () => {
     expect(describePaymentTerms({ name: '30 NET', unverified: true })).toBe(
-      '30 NET (no Workday match; the matched term\'s name could not be confirmed safe)'
+      '30 NET (no Workday match; could not read the Workday term name, so no terms were sent)'
     );
   });
 
@@ -210,11 +210,11 @@ describe('describePaymentTerms and notes', () => {
     );
     const unverified = { extractedPaymentTerms: { name: '30 NET', workdayId: null, unverified: true } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(unverified)).toBe(
-      '\n\nPayment Terms (from document): 30 NET (no Workday match; the matched term\'s name could not be confirmed safe)'
+      '\n\nPayment Terms (from document): 30 NET (no Workday match; could not read the Workday term name, so no terms were sent)'
     );
     const unverifiedWithId = { extractedPaymentTerms: { name: '30 NET', workdayId: null, unverified: true, candidateWorkdayId: 'wid-x' } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(unverifiedWithId)).toBe(
-      '\n\nPayment Terms (from document): 30 NET (no Workday match; the matched term\'s name could not be confirmed safe) (Workday ID: wid-x)'
+      '\n\nPayment Terms (from document): 30 NET (no Workday match; could not read the Workday term name, so no terms were sent) (Workday ID: wid-x)'
     );
     const resolvedSameName = { extractedPaymentTerms: { name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(resolvedSameName)).toBe('\n\nPayment Terms (from document): 30 NET (Workday ID: wid-plain)');

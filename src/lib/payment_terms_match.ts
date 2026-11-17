@@ -141,7 +141,7 @@ export function describePaymentTerms(terms: Pick<PaymentTermsResolution, 'name' 
     return `${terms.name} (no Workday match; "${terms.rejectedDiscountTerm}" was not used because the invoice shows no discount)`;
   }
   if (terms.unverified) {
-    return `${terms.name} (no Workday match; the matched term's name could not be confirmed safe)`;
+    return `${terms.name} (no Workday match; could not read the Workday term name, so no terms were sent)`;
   }
   if (terms.resolvedName && !isExactPaymentTermsMatch(terms.name, terms.resolvedName)) {
     return `${terms.name} (Workday: ${terms.resolvedName})`;

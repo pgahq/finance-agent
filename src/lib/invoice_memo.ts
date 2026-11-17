@@ -391,9 +391,14 @@ function polishDescription(description: string): string {
 
 // Common phrases AP asked to shorten so long memos fit. The short form may only use characters the pay-file
 // sanitizer keeps (letters, digits, space, hyphen, period, comma, apostrophe, slash, #), so black and white is
-// "b/w": an ampersand would be replaced with a space.
+// "b/w": an ampersand would be replaced with a space. Matches "and" or "&" between the words (printed invoices
+// use both, e.g. "black & white copies") — this must run on the raw description before sanitizeMemoText turns
+// "&" into a space, or the "&" form would never match.
 const MEMO_ABBREVIATIONS: ReadonlyArray<readonly [phrase: RegExp, short: string]> = [
-  [/\bblack[\s-]+and[\s-]+white\b/gi, 'b/w'],
+  [/\bblack[\s-]*(?:and|&)[\s-]*white\b/gi, 'b/w'],
+  // A model or supplier may already write the short form with "&" ("B&W copies"); without this, sanitizing
+  // turns "&" into a space and corrupts it to "B W" instead of leaving a sensible "b/w".
+  [/\bb\s*&\s*w\b/gi, 'b/w'],
 ];
 
 export function abbreviateMemoDescription(description: string): string {
@@ -403,12 +408,15 @@ export function abbreviateMemoDescription(description: string): string {
 export function composeInvoiceMemo(input: InvoiceMemoInput): string | undefined {
   const tokens = identifierTokens(input);
   const prefix = tokens.join(INVOICE_MEMO_TOKEN_SEPARATOR);
-  let description = sanitizeMemoFragment(blankToNull(input.description)) ?? '';
+  // Abbreviate before sanitizing: sanitizeMemoText turns "&" into a space, which would destroy an
+  // "&"-spelled phrase (e.g. "black & white") before MEMO_ABBREVIATIONS ever saw it.
+  const abbreviated = abbreviateMemoDescription(blankToNull(input.description) ?? '');
+  let description = sanitizeMemoFragment(abbreviated) ?? '';
   const strippable = descriptionTokensToStrip(input, tokens);
   if (strippable.length && description) {
     description = stripIdentifierTokensFromDescription(description, strippable);
   }
-  description = abbreviateMemoDescription(polishDescription(description));
+  description = polishDescription(description);
 
   // Identifiers are never cut; the description is left out when it would not fit. A description-only memo is cut.
   const composed = prefix ? `${prefix}${description ? `${INVOICE_MEMO_TOKEN_SEPARATOR}${description}` : ''}` : description;

@@ -21,6 +21,13 @@ describe('memo abbreviations', () => {
     expect(abbreviateMemoDescription('black-and-white flyers and color flyers')).toBe('b/w flyers and color flyers');
   });
 
+  it('shortens the "&" spelling too, since invoices print both forms', () => {
+    expect(abbreviateMemoDescription('black & white copies')).toBe('b/w copies');
+    expect(abbreviateMemoDescription('Black&White prints')).toBe('b/w prints');
+    expect(abbreviateMemoDescription('B&W copies')).toBe('b/w copies');
+    expect(abbreviateMemoDescription('b & w prints')).toBe('b/w prints');
+  });
+
   it('leaves other text alone', () => {
     expect(abbreviateMemoDescription('black and whitewash supplies')).toBe('black and whitewash supplies');
     expect(abbreviateMemoDescription('black paint and white paint')).toBe('black paint and white paint');
@@ -33,6 +40,13 @@ describe('memo abbreviations', () => {
       po: 'PO-414498',
       description: 'Black and white copies',
     })).toBe('Acct 1033562 PO-414498 b/w copies');
+  });
+
+  it('abbreviates the "&" spelling before sanitizing strips the ampersand to a space', () => {
+    // sanitizeMemoText replaces "&" with a space; abbreviation must see the raw "&" first, or this would
+    // come out as the confusing "b w copies" / "black white copies" instead of "b/w copies".
+    expect(composeInvoiceMemo({ description: 'B&W copies' })).toBe('b/w copies');
+    expect(composeInvoiceMemo({ description: 'black & white copies' })).toBe('b/w copies');
   });
 
   it('lets a long description fit that would be dropped unabbreviated', () => {
