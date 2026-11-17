@@ -40,6 +40,7 @@ const packet = (payeeName: string | null): ReimbursementPacket => ({
   payeeName,
   payeeSupplierId: null,
   formAmountToPay: '$1,000.00',
+  formAmountLabel: 'Amount to Pay',
   emailAmount: null,
   emailAmountIsCap: null,
   formDate: '11/02/2026',

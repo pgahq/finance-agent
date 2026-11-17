@@ -701,6 +701,23 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('function ran');
   });
 
+  it('says an unconfirmed amount, payee, or email amount is not confirmed instead of showing a guess', async () => {
+    await notifyResult('create_invoice', 'success', 9000, {
+      reimbursementManualEntry: {
+        reason: "the reads of the packet did not give one confirmed Amount to Pay, and the form's own totals could not confirm it (the column totals do not add up to the form total)",
+        notConfirmed: ['payeeName', 'formAmount', 'emailAmount'],
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('Not created: the reads of the packet did not give one confirmed Amount to Pay');
+    expect(texts).toContain('Payee on the form: not confirmed. Read it from the form.');
+    expect(texts).toContain('Amount to Pay on the form: not confirmed. Read it from the form.');
+    expect(texts).toContain('Amount in the email: not confirmed. Read it from the email.');
+    expect(texts).not.toMatch(/\$\d/);
+    expect(texts).toContain('Nothing was written to Workday.');
+  });
+
   it('shows the payee and approved amount of a booked reimbursement', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
