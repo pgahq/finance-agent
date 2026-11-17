@@ -8,7 +8,7 @@ import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines
 import { attachmentContentParts, convertOfficeAttachmentsForModel } from './invoice_ocr.js';
 import { supplierNamesMatch } from './po_supplier.js';
 import { findUniqueSupplierByNameEvidence } from './supplier_match.js';
-import { resolveSupplierIdHints } from './supplier_note_hints.js';
+import { resolveSupplierIdFromText, resolveSupplierIdHints } from './supplier_note_hints.js';
 import type { InvoiceData, PresignedAttachment } from './types.js';
 import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { normalizePrintedDate, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
@@ -127,9 +127,12 @@ export function hasReimbursementSignal(
   return SIGNAL.test(text);
 }
 
+// plainTextBody is the source email plus every Intercom conversation part (notes and replies included), so it
+// is preferred over messageBody (just the one message that carried this attachment) — otherwise a note added
+// after the attaching message, such as AP naming the correct Supplier ID, never reaches the packet read.
 function emailText(emailContext: EmailContextInput): string {
   if (!emailContext) return 'No email context.';
-  const body = (emailContext.messageBody || emailContext.plainTextBody || 'N/A').slice(0, EMAIL_TEXT_LIMIT);
+  const body = (emailContext.plainTextBody || emailContext.messageBody || 'N/A').slice(0, EMAIL_TEXT_LIMIT);
   return `From: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.messageSubject || emailContext.subject || 'N/A'}\nBody: ${body}`;
 }
 
@@ -589,7 +592,8 @@ type PayeeResult = AppliedReimbursement['payee'] | { failure: string };
 async function resolvePayee(
   db: DatabaseConnection,
   packet: ReimbursementPacket,
-  defaultSupplierWid: string | undefined
+  defaultSupplierWid: string | undefined,
+  emailContext: EmailContextInput
 ): Promise<PayeeResult> {
   const nameOnForm = packet.payeeName?.trim();
   if (!nameOnForm) return { failure: 'the packet does not name the person to pay' };
@@ -605,6 +609,34 @@ async function resolvePayee(
     if (hint.workdayId === defaultSupplierWid) return { failure: `Supplier ID ${supplierId} is the default supplier` };
     return { workdayId: hint.workdayId, supplierName: hint.supplierName, supplierId, nameOnForm, matchedBy: 'supplier_id' };
   }
+
+  // No Supplier ID was printed on the form or in the email. AP (or the supplier) may still have named the
+  // correct one somewhere in the Intercom conversation or email body — for example a note added after the
+  // original packet, when the payee's name alone is ambiguous between two cached suppliers. Only an exact
+  // cache match whose name agrees with the form is honored; the same name-mismatch and default-supplier
+  // stops apply as for a printed ID, and more than one distinct ID in the text is never guessed between.
+  const noteLookup = await resolveSupplierIdFromText(db, emailContext?.plainTextBody, nameOnForm, {
+    excludeWorkdayIds: [defaultSupplierWid],
+  });
+  if (noteLookup.outcome === 'resolved') {
+    return {
+      workdayId: noteLookup.workdayId,
+      supplierName: noteLookup.supplierName,
+      supplierId: noteLookup.supplierId,
+      nameOnForm,
+      matchedBy: 'supplier_id',
+    };
+  }
+  if (noteLookup.outcome === 'name_mismatch') {
+    return { failure: `Supplier ID ${noteLookup.supplierId} named in the Intercom conversation belongs to ${noteLookup.supplierName || 'a supplier with no name'}, which does not match ${nameOnForm}` };
+  }
+  if (noteLookup.outcome === 'excluded') {
+    return { failure: `Supplier ID ${noteLookup.supplierId} named in the Intercom conversation is the default supplier` };
+  }
+  if (noteLookup.outcome === 'not_cached') {
+    return { failure: `Supplier ID ${noteLookup.supplierId} named in the Intercom conversation is not in the supplier cache` };
+  }
+  // 'none' or 'ambiguous': fall through to the name-only match below.
 
   const match = await findUniqueSupplierByNameEvidence(db, {
     printedName: nameOnForm,
@@ -627,7 +659,7 @@ async function resolvePayee(
 export async function decideReimbursement(
   db: DatabaseConnection,
   packet: ReimbursementRead | undefined,
-  options: { defaultSupplierWid?: string } = {}
+  options: { defaultSupplierWid?: string; emailContext?: EmailContextInput } = {}
 ): Promise<ReimbursementDecision> {
   if (!packet || packet.kind !== 'reimbursement') return { outcome: 'not_reimbursement' };
   if (packet.confidence < MIN_CONFIDENCE) {
@@ -647,7 +679,7 @@ export async function decideReimbursement(
   if (!invoiceDate) return manual(packet, 'the reimbursement form prints no readable date, so the invoice would have no number to stop a duplicate');
 
   const totalLabel = packet.confirmedByFormMath?.label ?? payableTotalLabel(packet.formAmountLabel);
-  const payee = await resolvePayee(db, packet, options.defaultSupplierWid);
+  const payee = await resolvePayee(db, packet, options.defaultSupplierWid, options.emailContext);
   if ('failure' in payee) return manual(packet, payee.failure);
 
   return {
