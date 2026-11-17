@@ -1024,12 +1024,23 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     expect(plan.noteLabel).toBe('Pay application');
   });
 
-  it('keeps the plain balance rule and its PO line match for other subtotal labels', () => {
+  it('keeps the plain balance rule for other subtotal labels, with two PO lines that neither match', () => {
     // Two lines, neither an exact match nor described as a final/remaining payment: the generic balance rule's
-    // sole-line fallback (main) does not apply here either, so this still leaves the PO line unmatched.
+    // sole-line fallback (#271) does not apply here either, so this still leaves the PO line unmatched.
     const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'Subtotal', amount: '$551,250.00' }, poLines: [poLine('L1', 612500), poLine('L2', 900000)] }))!;
     expect(plan.applied).toBe(false);
     expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
+  it('books a plain balance invoice on its only PO line under the remaining-balance rule, not the pay-application rule', () => {
+    // Not a pay application (the subtotal label is "Subtotal", not completed-to-date), so this goes through
+    // #271's selectBalancePoLine, whose sole-line fallback books the PO's only line even though nothing describes
+    // it as a final or remaining payment, because payments reconcile the contract total to the amount due.
+    const line = poLine('L1', 612500);
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'Subtotal', amount: '$551,250.00' }, poLines: [line] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Balance invoice');
+    expect(plan.poLines).toEqual([line]);
   });
 
   it('does not book a pay application with tax or freight printed', () => {
