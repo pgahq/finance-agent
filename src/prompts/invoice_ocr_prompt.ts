@@ -165,7 +165,8 @@ function fullYear(year: string): number {
  * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026), or a
  * month name with a four-digit year ("Nov 11, 2026", "11th November 2026"). Two-digit years are 20YY. Anything
  * else is null. A dot separator (11.11.26) is read the same way only when `dottedDates` is set: dots are also how
- * day.month.year dates are written outside the US, so a caller that has no other check on the order opts in.
+ * day.month.year dates are written outside the US, so only a caller that can accept a month/day reading of a
+ * dotted date opts in.
  */
 export function normalizePrintedDate(value: string | null | undefined, options: { dottedDates?: boolean } = {}): string | null {
   const text = value?.trim();
