@@ -24,6 +24,7 @@ import {
   formatPoLineReviewNotes,
   formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
+  formatBankingInfoNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
   formatRepeatedLineNotes,
@@ -1531,7 +1532,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1828,6 +1829,7 @@ async function processInvoiceCluster(
           paymentTermsId,
           attachments: submitAttachments,
           ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+          ...(result.bankingInfoPrinted ? { bankingInfoIncluded: true } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
         const updateSnapshotSaved = await snapshotAgentWrite(context, {
@@ -1905,6 +1907,7 @@ async function processInvoiceCluster(
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
+      ...(result.bankingInfoPrinted ? { bankingInfoIncluded: true } : {}),
       ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
       ...(reimbursement ? { keepSupplier: true } : {}),

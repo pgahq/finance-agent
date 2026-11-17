@@ -148,6 +148,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedSecondReadOutcome: z.enum(['rejected', 'inconclusive', 'not_lines', 'failed', 'skipped']).nullable().optional().describe('Set by code and never by a model: why a missing-row second read did not change the rows ("rejected" when it found no new row, "inconclusive" when it changed or added rows without closing the gap, "not_lines" when the row that closed the gap was labeled like tax, a balance, a payment, or a finance charge). Null when no second read was needed or its rows were used.'),
 
+  bankingInfoPrinted: z.boolean().nullable().optional().describe('Set by code from the document read and never by a model: true when a supplier invoice document prints bank details a payer would use to send money to the supplier. Null when no document read ran.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
