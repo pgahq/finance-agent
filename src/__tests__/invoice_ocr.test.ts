@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import { enrichInvoiceFromAttachments } from '../lib/invoice_enrichment.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment } from '../lib/invoice_ocr.js';
+import { planBalanceInvoice } from '../lib/partial_payment.js';
 import { DEFAULT_OCR_MODEL_ID, getOcrModel } from '../lib/models.js';
 import { InvoiceMatchingSchema } from '../prompts/enrich_invoice_prompt.js';
 import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, normalizePrintedDate, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
@@ -10,6 +11,7 @@ import type { PresignedAttachment } from '../lib/types.js';
 import { supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 import { supin472322Header, supin472322MissedRows, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108DeliveryRow, supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
+import { supin474922Header, supin474922Rows } from './fixtures/supin_474922.js';
 import { payrollRechargeHeader, payrollRechargeRows, payrollRechargeSiblingRows } from './fixtures/payroll_recharge.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn(), warn: jest.fn() }));
@@ -1032,6 +1034,35 @@ describe('invoice OCR pass', () => {
       const normalized = normalizeInvoiceOcrResult(response({ extractedPriorPayments: [release] }));
       expect(normalized.extractedRetainage).toBeNull();
       expect(normalized.extractedPriorPayments).toEqual([release]);
+    });
+
+    it('keeps the printed lines with a note when the model returns the 5a, 5b, and total retainage rows separately', () => {
+      const certificates = { label: 'Less Previous Certificates for Payment', amount: '$367,500.00' };
+      const rows = [
+        { label: 'Retainage 5a: 10% of Completed Work', amount: '$50,000.00' },
+        { label: 'Retainage 5b: 10% of Stored Material', amount: '$11,250.00' },
+        { label: 'Total Retainage (Line 5a + 5b)', amount: '$61,250.00' },
+        certificates,
+      ];
+      const normalized = normalizeInvoiceOcrResult(response({
+        extractedLineSubtotal: supin474922Header.extractedLineSubtotal,
+        extractedAmountDue: supin474922Header.extractedAmountDue,
+        extractedPriorPayments: rows,
+      }));
+      expect(normalized.extractedRetainage).toMatchObject({ amount: '$50,000.00' });
+      expect(normalized.extractedPriorPayments).toEqual(rows.slice(1));
+      const plan = planBalanceInvoice({
+        priorPayments: normalized.extractedPriorPayments,
+        retainage: normalized.extractedRetainage,
+        emailBalanceDue: null,
+        lineSubtotal: normalized.extractedLineSubtotal,
+        amountDue: normalized.extractedAmountDue,
+        lines: supin474922Rows,
+        poLines: undefined,
+      })!;
+      expect(plan.applied).toBe(false);
+      expect(plan.line).toBeUndefined();
+      expect(plan.note).toContain('is $122,500.00, not the current payment due $183,750.00');
     });
 
     it('carries retainage through the merge, and is empty without OCR', () => {
