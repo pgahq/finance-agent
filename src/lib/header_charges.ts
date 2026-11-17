@@ -147,6 +147,11 @@ export function isTaxLikeChargeLabel(label: string | null | undefined): boolean 
 
 // Acronyms that are payroll tax on their own, with no "tax" word needed (`FICA`, not `FICA Processing Fee`).
 const PAYROLL_TAX_ACRONYMS = new Set(['fica', 'futa', 'suta']);
+// Words that turn a payroll- or acronym-tax-looking label into a service or administrative fee, not the tax or
+// wages themselves (`FICA Processing Fee`, `FUTA Filing Fee`, `Payroll Administration Charge`).
+const FEE_OR_SERVICE_WORDS = new Set([
+  'fee', 'fees', 'filing', 'processing', 'administration', 'administrative', 'service', 'services', 'charge', 'charges',
+]);
 // Words that make a *tax-like* label payroll or employment tax, but are not tax on their own: `Payroll Processing
 // Fee` and `Employer Service Charge` must stay excluded, so these only count alongside a TAX_CORE_WORDS word.
 const PAYROLL_TAX_QUALIFIER_WORDS = new Set(['payroll', 'employer', 'employers', 'employment', 'unemployment']);
@@ -174,12 +179,20 @@ export interface PayrollTaxContext {
   poLines?: Array<{ description?: string | null; memo?: string | null }> | null;
 }
 
+// `wages` fires on a bare "payroll" mention, which also appears in service-fee labels that are not a wages
+// recharge at all (`Payroll Processing Fee`). Require an actual wage/salary word before counting those as wages.
+const EXPLICIT_WAGE_WORDS = /\b(?:wages?|salary|salaries)\b/;
+
 function payrollCategoriesOnLines(lines: PayrollTaxContext['lines']): Set<PayrollLineCategory> {
   const found = new Set<PayrollLineCategory>();
   for (const line of lines ?? []) {
     const text = normalizeLabel([line.description, ...(line.descriptionCells ?? [])].filter(Boolean).join(' ')) ?? '';
+    const tokens = text.split(' ').filter(Boolean);
+    const isFeeContext = tokens.some(token => FEE_OR_SERVICE_WORDS.has(token));
     for (const { category, pattern } of PAYROLL_LINE_CATEGORIES) {
-      if (pattern.test(text)) found.add(category);
+      if (!pattern.test(text)) continue;
+      if (category === 'wages' && isFeeContext && !EXPLICIT_WAGE_WORDS.test(text)) continue;
+      found.add(category);
     }
   }
   return found;
@@ -209,10 +222,14 @@ export function isPayrollRechargeInvoice(context: PayrollTaxContext): boolean {
 export function isPayrollTaxCharge(label: string | null | undefined, context: PayrollTaxContext): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
   if (tokens.length === 0 || tokens.some(token => TAX_METADATA_WORDS.has(token))) return false;
-  if (tokens.some(token => PAYROLL_TAX_ACRONYMS.has(token))) return true;
-  const hasPayrollQualifier = tokens.some(token => PAYROLL_TAX_QUALIFIER_WORDS.has(token));
   const hasCoreTaxWord = tokens.some(token => TAX_CORE_WORDS.has(token));
-  if (hasPayrollQualifier && hasCoreTaxWord) return true;
+  if (tokens.some(token => PAYROLL_TAX_ACRONYMS.has(token))) {
+    const isAcronymFeeLabel = tokens.some(token => FEE_OR_SERVICE_WORDS.has(token));
+    if (!isAcronymFeeLabel || hasCoreTaxWord) return true;
+  } else {
+    const hasPayrollQualifier = tokens.some(token => PAYROLL_TAX_QUALIFIER_WORDS.has(token));
+    if (hasPayrollQualifier && hasCoreTaxWord) return true;
+  }
   if (!isTaxLikeChargeLabel(label) || tokens.some(token => TRANSACTION_TAX_QUALIFIERS.has(token))) return false;
   return isPayrollRechargeInvoice(context);
 }
@@ -271,6 +288,11 @@ export function placePayrollTaxCharges(input: {
   let headerTaxCents = toCents(chargeAmount(input.tax) ?? 0);
   const placed: TaxCandidate[] = [];
   let taxCleared = false;
+  // The amount moved off the header field onto its own line, kept even after headerTaxCents is zeroed below, so a
+  // later other charge of the same amount is recognized as the same OCR read repeated under a different label
+  // (`FICA` in Tax_Amount, `Employer Payroll Taxes` as an other charge) and dropped rather than doubled onto the
+  // lines (see dedupe below).
+  let clearedHeaderTaxCents: number | undefined;
 
   // The main tax field itself can be a misread payroll or employment tax row (OCR put a bare "Taxes" straight
   // into extractedTaxAmount instead of leaving it a line or other charge). Header Tax_Amount is only sales/use tax.
@@ -283,6 +305,7 @@ export function placePayrollTaxCharges(input: {
       knownAmounts.push({ tokens, cents: headerTaxCents });
     }
     taxCleared = true;
+    clearedHeaderTaxCents = headerTaxCents;
     headerTaxCents = 0;
   }
 
@@ -295,9 +318,10 @@ export function placePayrollTaxCharges(input: {
       remaining.push(charge);
       continue;
     }
-    // A charge that merely restates the (now resolved) header tax figure is a duplicate OCR read of the same row,
-    // not a second payroll tax charge: drop it rather than leaving it to surface as an unexplained charge.
-    if (restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents)) {
+    // A charge that merely restates the (now resolved) header tax figure, or repeats the amount just moved off
+    // the header field onto a line, is a duplicate OCR read of the same row, not a second payroll tax charge:
+    // drop it rather than leaving it to double onto the lines or surface as an unexplained charge.
+    if (restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents) || cents === clearedHeaderTaxCents) {
       droppedOrRepeatedAny = true;
       continue;
     }

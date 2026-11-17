@@ -872,6 +872,15 @@ describe('payroll tax is not header tax', () => {
       expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Payroll processing fees' }] })).toBe(false);
       expect(isPayrollRechargeInvoice({ poLines: [{ description: 'Equipment recharge' }] })).toBe(false);
     });
+
+    it('does not read a line that only names payroll in a service-fee context as wages', () => {
+      // "Payroll Processing Fee" names "payroll" but bills for running payroll, not the wages themselves, so it
+      // must not combine with a "Medical Premium" row to look like a two-category payroll recharge.
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Payroll Processing Fee' }, { description: 'Medical Premium' }] })).toBe(false);
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Payroll Administration Charge' }, { description: 'Workers Comp' }] })).toBe(false);
+      // An explicit "Wages" word still counts even alongside a fee word.
+      expect(isPayrollRechargeInvoice({ lines: [{ description: 'Wages Processing Fee' }, { description: 'Medical Premium' }] })).toBe(true);
+    });
   });
 
   describe('isPayrollTaxCharge', () => {
@@ -905,6 +914,15 @@ describe('payroll tax is not header tax', () => {
       expect(isPayrollTaxCharge('Employer Service Charge', siblingContext)).toBe(false);
       expect(isPayrollTaxCharge('Payroll Tax ID', siblingContext)).toBe(false);
       expect(isPayrollTaxCharge('Employer Tax Exempt', siblingContext)).toBe(false);
+    });
+
+    it('never treats an acronym-worded service fee as payroll tax, on any invoice', () => {
+      // "FICA Processing Fee" names the acronym but bills for administering FICA, not the tax itself.
+      expect(isPayrollTaxCharge('FICA Processing Fee', {})).toBe(false);
+      expect(isPayrollTaxCharge('FUTA Filing Fee', siblingContext)).toBe(false);
+      expect(isPayrollTaxCharge('SUTA Administration Charge', siblingContext)).toBe(false);
+      // A core tax word alongside the acronym still reads as the tax, fee word or not.
+      expect(isPayrollTaxCharge('FICA Tax Processing Fee', {})).toBe(true);
     });
   });
 
@@ -1048,6 +1066,24 @@ describe('payroll tax is not header tax', () => {
 
       expect(placed.addedLines).toBe(1);
       expect(placed.lines.filter(line => line.description === 'Taxes')).toHaveLength(1);
+      expect(placed.otherCharges).toEqual([]);
+    });
+
+    it('drops a charge that repeats the amount just cleared off the header tax field under an unrelated label', () => {
+      // OCR put the payroll tax row straight into extractedTaxAmount as "FICA" (so it is moved onto its own
+      // line), and also printed a second, differently-labeled read of the same row as another charge. "FICA" and
+      // "Employer Payroll Taxes" share no overlapping word, so this has to be caught by amount alone, not by the
+      // token-overlap check that catches a merely re-worded duplicate of a line already on the invoice.
+      const placed = placePayrollTaxCharges({
+        ...base,
+        tax: '$500.00',
+        taxLabel: 'FICA',
+        otherCharges: [{ label: 'Employer Payroll Taxes', amount: '$500.00' }],
+      });
+
+      expect(placed.taxCleared).toBe(true);
+      expect(placed.addedLines).toBe(1);
+      expect(placed.lines.filter(line => line.totalPrice === '500.00')).toHaveLength(1);
       expect(placed.otherCharges).toEqual([]);
     });
   });
