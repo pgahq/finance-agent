@@ -1078,4 +1078,28 @@ describe('applied reimbursement outputs', () => {
       'Receipts and folios were not booked as invoice lines.',
     ]);
   });
+
+  it('says the Supplier ID came from the Intercom conversation, not the form, when matched that way', () => {
+    const conversationMatch: AppliedReimbursement = { ...applied, payee: { ...applied.payee, matchedBy: 'supplier_id_conversation' } };
+    expect(reimbursementNote(conversationMatch)).toContain(
+      'Reimbursement packet: invoiced to S-000123 MORGAN T ELLERY for $1,000.00, the Amount to Pay on the reimbursement form.'
+    );
+    const enrichment = applyReimbursementToEnrichment({ supplier: { status: 'not_found' } } as never, conversationMatch);
+    expect(enrichment.supplier.reason).toContain('matched Workday supplier S-000123 MORGAN T ELLERY by Supplier ID S-000123 named in the Intercom conversation, and name.');
+    expect(reimbursementSlackLines(conversationMatch)).toContainEqual('Payee: MORGAN T ELLERY (S-000123), matched by Supplier ID S-000123 named in the Intercom conversation, and name');
+  });
+
+  it('tells AP when a Supplier ID named in the conversation did not match and was not used', () => {
+    const withMismatch: AppliedReimbursement = {
+      ...applied,
+      payee: { ...applied.payee, conversationIdMismatch: { supplierId: 'S-000999', supplierName: 'HARBOR VIEW HOTEL LLC' } },
+    };
+    const mismatchSentence = 'A Supplier ID named in the Intercom conversation, S-000999 (HARBOR VIEW HOTEL LLC), does not match Morgan Ellery and was not used.';
+    expect(reimbursementNote(withMismatch)).toContain(mismatchSentence);
+    const enrichment = applyReimbursementToEnrichment({ supplier: { status: 'not_found' } } as never, withMismatch);
+    expect(enrichment.supplier.reason).toContain(mismatchSentence);
+    expect(reimbursementSlackLines(withMismatch)).toContainEqual(`Note: ${mismatchSentence}`);
+    // Unaffected when there is nothing to report.
+    expect(reimbursementNote(applied)).not.toContain('Supplier ID named in the Intercom conversation');
+  });
 });

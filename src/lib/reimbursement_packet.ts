@@ -63,6 +63,14 @@ export interface AppliedReimbursement {
      * Slack line say where the ID came from, since AP looking for it on the form would not find it.
      */
     matchedBy: 'supplier_id' | 'supplier_id_conversation' | 'name';
+    /**
+     * Set when a Supplier ID was named in the Intercom conversation but belonged to a different name, so it was
+     * not used and the payee was matched by name instead. Surfaced in the note and Slack line so AP sees that a
+     * named ID was not booked, rather than only seeing "matched by name" and wondering why not. When the name
+     * match fails too, the same fact is folded into the manual-entry reason string instead (there is no payee
+     * object to carry it on).
+     */
+    conversationIdMismatch?: { supplierId: string; supplierName: string };
   };
   amount: number;
   amountLabel: string;
@@ -623,9 +631,10 @@ async function resolvePayee(
   // correct one somewhere in the Intercom conversation or email body — for example a note added after the
   // original packet, when the payee's name alone is ambiguous between two cached suppliers. Only an exact
   // cache match whose name agrees with the form is honored, and more than one distinct ID in the text is
-  // never guessed between. Deliberately reads plainTextBody (every conversation part, any author), not only
-  // internal AP notes (adminConversationParts) — matching the existing trustedSupplierIds precedent for
-  // supplier invoices (invoice_enrichment.ts), which is also any-author.
+  // never guessed between. Deliberately reads plainTextBody (the source email plus every conversation part,
+  // any author), not only internal AP notes (adminConversationParts). trustedSupplierIds for supplier invoices
+  // (invoice_enrichment.ts) sets the any-author precedent, though it reads the narrower conversationParts
+  // (conversation parts only, no source email) rather than plainTextBody.
   const noteLookup = await resolveSupplierIdFromText(db, emailContext?.plainTextBody, nameOnForm, {
     excludeWorkdayIds: [defaultSupplierWid],
   });
@@ -647,19 +656,27 @@ async function resolvePayee(
   // 'name_mismatch': the ID is a real cached supplier, just not this payee (someone else's invoice number, a
   // hotel's Supplier ID, a signature) — not a correction for this packet, so it is noise, not a stop. 'none' and
   // 'ambiguous' fall through here too. Only excluded/not_cached stop above, since those two IDs most likely were
-  // meant for this payee and a wrong guess must not go to Workday.
+  // meant for this payee and a wrong guess must not go to Workday. A name_mismatch is still worth telling AP
+  // about, so it carries forward into whatever the name match below decides, instead of disappearing silently.
+  const unmatchedNote = noteLookup.outcome === 'name_mismatch'
+    ? { supplierId: noteLookup.supplierId, supplierName: noteLookup.supplierName || 'a supplier with no name' }
+    : undefined;
+  const mismatchAside = unmatchedNote
+    ? ` (a Supplier ID named in the Intercom conversation, ${unmatchedNote.supplierId}, belongs to ${unmatchedNote.supplierName}, not ${nameOnForm}, and was not used)`
+    : '';
 
   const match = await findUniqueSupplierByNameEvidence(db, {
     printedName: nameOnForm,
     excludeWorkdayIds: [defaultSupplierWid],
   });
-  if (!match) return { failure: `no single supplier in the cache matches the payee name ${nameOnForm}` };
+  if (!match) return { failure: `no single supplier in the cache matches the payee name ${nameOnForm}${mismatchAside}` };
   return {
     workdayId: match.workdayId,
     supplierName: match.supplierName,
     ...(match.supplierId ? { supplierId: match.supplierId } : {}),
     nameOnForm,
     matchedBy: 'name',
+    ...(unmatchedNote ? { conversationIdMismatch: unmatchedNote } : {}),
   };
 }
 
@@ -714,9 +731,14 @@ function matchedByPhrase(matchedBy: AppliedReimbursement['payee']['matchedBy'], 
   return 'exact name';
 }
 
+/** A Supplier ID named in the conversation but belonging to someone else, as one sentence AP can see. */
+function conversationIdMismatchSentence(mismatch: { supplierId: string; supplierName: string } | undefined, nameOnForm: string): string {
+  return mismatch ? ` A Supplier ID named in the Intercom conversation, ${mismatch.supplierId} (${mismatch.supplierName}), does not match ${nameOnForm} and was not used.` : '';
+}
+
 function supplierReason(reimbursement: AppliedReimbursement): string {
   const { payee } = reimbursement;
-  return `Reimbursement payee ${payee.nameOnForm} matched Workday supplier ${payee.supplierId ? `${payee.supplierId} ` : ''}${payee.supplierName} by ${matchedByPhrase(payee.matchedBy, payee.supplierId)}. The merchant on receipts or folios was not used as the supplier.`;
+  return `Reimbursement payee ${payee.nameOnForm} matched Workday supplier ${payee.supplierId ? `${payee.supplierId} ` : ''}${payee.supplierName} by ${matchedByPhrase(payee.matchedBy, payee.supplierId)}.${conversationIdMismatchSentence(payee.conversationIdMismatch, payee.nameOnForm)} The merchant on receipts or folios was not used as the supplier.`;
 }
 
 /** The invoice the packet stands for, in place of reading the folio as an invoice. One line at the approved amount. */
@@ -827,7 +849,8 @@ export function reimbursementNote(reimbursement: AppliedReimbursement): string {
   const columns = math?.columns.map((column) => `${column.label} ${column.total}`).join(', ');
   const checked = math ? ` The reads of the form did not give one agreed total, so it was checked against the form's own arithmetic: the column totals (${columns}) add up to it, and each column's line items add up to its column total.` : '';
   const named = `the ${reimbursement.totalLabel ?? 'Amount to Pay'} on the reimbursement form`;
-  return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, ${named}.${cap}${checked} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
+  const mismatch = conversationIdMismatchSentence(payee.conversationIdMismatch, payee.nameOnForm);
+  return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, ${named}.${cap}${checked}${mismatch} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
 }
 
 /** Lines for the Slack success post. */
@@ -838,6 +861,9 @@ export function reimbursementSlackLines(reimbursement: AppliedReimbursement): st
     `Amount: ${reimbursement.amountLabel} from the form's ${reimbursement.totalLabel ?? 'Amount to Pay'}${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
     ...(reimbursement.confirmedByFormMath
       ? ["Check the total first: the reads of the form did not give one agreed total, and the form's own arithmetic confirmed it (the column totals and each column's line items add up)."]
+      : []),
+    ...(payee.conversationIdMismatch
+      ? [`Note:${conversationIdMismatchSentence(payee.conversationIdMismatch, payee.nameOnForm)}`.trim()]
       : []),
     'Receipts and folios were not booked as invoice lines.',
   ];

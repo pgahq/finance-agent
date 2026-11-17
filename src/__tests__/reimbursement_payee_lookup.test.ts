@@ -117,20 +117,27 @@ describe('reimbursement payee lookup on a supplier cache', () => {
     }
   });
 
-  it('still books an unambiguous name match when the conversation happens to name an unrelated Supplier ID', async () => {
+  it('still books an unambiguous name match when the conversation happens to name an unrelated Supplier ID, and says so', async () => {
     // The hotel's own Supplier ID shows up in the thread (e.g. quoted from a folio), but the payee name alone
-    // is unique in the cache, so the unrelated ID must not block the booking that would have happened anyway.
+    // is unique in the cache, so the unrelated ID must not block the booking that would have happened anyway —
+    // AP should still see that it was named and not used, so it does not look missed.
     db.query.mockResolvedValueOnce([{ workday_id: 'wid-avery-hotel', metadata: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } }]);
     const decision = await decide('Avery Lindqvist', { plainTextBody: 'The hotel folio references Supplier ID S-100004 for billing.' });
-    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-avery', matchedBy: 'name' } } });
+    expect(decision).toMatchObject({
+      outcome: 'apply',
+      reimbursement: { payee: { workdayId: 'wid-avery', matchedBy: 'name', conversationIdMismatch: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } } },
+    });
   });
 
-  it('falls through to the ambiguous-name stop, not the mismatch wording, when the conversation names an unrelated ID', async () => {
+  it('falls through to the ambiguous-name stop, not the mismatch wording, when the conversation names an unrelated ID, but still mentions the ID', async () => {
     CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
     db.query.mockResolvedValueOnce([{ workday_id: 'wid-avery-hotel', metadata: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } }]);
     try {
       const decision = await decide('Jordan Reyes', { plainTextBody: 'Use S-100004 for this payment.' });
-      expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('no single supplier in the cache matches') } });
+      expect(decision).toMatchObject({
+        outcome: 'manual_entry',
+        manual: { reason: expect.stringMatching(/no single supplier in the cache matches.*S-100004.*LINDQVIST HOTEL GROUP INC.*not Jordan Reyes.*not used/) },
+      });
     } finally {
       CACHE.pop();
     }
