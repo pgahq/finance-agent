@@ -389,6 +389,17 @@ function polishDescription(description: string): string {
   return withoutPeriod.charAt(0).toLowerCase() + withoutPeriod.slice(1);
 }
 
+// Common phrases AP asked to shorten so long memos fit. The short form may only use characters the pay-file
+// sanitizer keeps (letters, digits, space, hyphen, period, comma, apostrophe, slash, #), so black and white is
+// "b/w": an ampersand would be replaced with a space.
+const MEMO_ABBREVIATIONS: ReadonlyArray<readonly [phrase: RegExp, short: string]> = [
+  [/\bblack[\s-]+and[\s-]+white\b/gi, 'b/w'],
+];
+
+export function abbreviateMemoDescription(description: string): string {
+  return MEMO_ABBREVIATIONS.reduce((text, [phrase, short]) => text.replace(phrase, short), description);
+}
+
 export function composeInvoiceMemo(input: InvoiceMemoInput): string | undefined {
   const tokens = identifierTokens(input);
   const prefix = tokens.join(INVOICE_MEMO_TOKEN_SEPARATOR);
@@ -397,7 +408,7 @@ export function composeInvoiceMemo(input: InvoiceMemoInput): string | undefined 
   if (strippable.length && description) {
     description = stripIdentifierTokensFromDescription(description, strippable);
   }
-  description = polishDescription(description);
+  description = abbreviateMemoDescription(polishDescription(description));
 
   // Identifiers are never cut; the description is left out when it would not fit. A description-only memo is cut.
   const composed = prefix ? `${prefix}${description ? `${INVOICE_MEMO_TOKEN_SEPARATOR}${description}` : ''}` : description;
