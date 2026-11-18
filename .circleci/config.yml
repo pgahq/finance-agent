@@ -129,8 +129,8 @@ jobs:
       AUDIT_SLACK_CHANNEL_ID: C0C6VS0BDPA
       # Work_Queue_Tag_ID of "Supplier Bank information is Available (priority)".
       BANKING_INFO_TAG_REF_ID: Supplier_Bank_Information
-      # Jev scores the audit in shadow beside the rules; the rules stay official.
-      JEV_AUDIT_MODE: shadow
+      # Jev's verdicts are the official audit score (the rules are the fallback when Jev cannot answer).
+      JEV_AUDIT_MODE: "on"
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -151,8 +151,8 @@ jobs:
       AUDIT_SLACK_CHANNEL_ID: C0C5W6B0G4V
       # Work_Queue_Tag_ID of "Supplier Bank information is Available (priority)".
       BANKING_INFO_TAG_REF_ID: Supplier_Bank_Information
-      # Jev scores the audit in shadow beside the rules; the rules stay official.
-      JEV_AUDIT_MODE: shadow
+      # Jev's verdicts are the official audit score (the rules are the fallback when Jev cannot answer).
+      JEV_AUDIT_MODE: "on"
 
 workflows:
   version: 2
