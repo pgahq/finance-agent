@@ -837,6 +837,7 @@ export function reimbursementOcr(reimbursement: AppliedReimbursement): InvoiceOc
     extractedLineSubtotal: null,
     extractedPartialPayment: null,
     extractedPriorPayments: null,
+    extractedRetainage: null,
     extractedPurchaseOrderNumber: null,
     bankingInfoPrinted: false,
     extractedAccountNumber: null,

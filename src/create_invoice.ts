@@ -100,7 +100,7 @@ import {
   type FinalInvoiceLine,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
+import { hasPrintedRetainage, reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -1227,6 +1227,7 @@ async function processInvoiceCluster(
       settlementPrinted: hasPrintedSettlement({
         extractedPartialPayment: result.extractedPartialPayment,
         extractedPriorPayments: result.extractedPriorPayments,
+        extractedRetainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
       }),
       lineSubtotal: result.extractedLineSubtotal,
@@ -1266,7 +1267,8 @@ async function processInvoiceCluster(
     if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
     const extractedCandidateLines = withComposedLineDescriptions(charges.lines);
     // A deposit invoice bills a printed amount smaller than its contract total, so one deposit line replaces the lines.
-    const depositPlan = chargeWithheld || freightAsLines
+    // A document that prints retainage is a pay application, so the balance plan reconciles it (or flags unreadable figures), not the deposit plan.
+    const depositPlan = chargeWithheld || freightAsLines || result.extractedRetainage != null
       ? undefined
       : planPartialPayment({
         currency: documentCurrency,
@@ -1300,7 +1302,7 @@ async function processInvoiceCluster(
     // The amount due is the better judge of missing rows when the printed total covers only part of the table, but
     // it says nothing on an invoice that bills a deposit, an advance, or what is left after payments.
     const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
-    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length || hasPrintedRetainage(result.extractedRetainage)
       ? undefined
       : reviewAmountDueGapCents({
         lines: charges.lines,
@@ -1348,6 +1350,7 @@ async function processInvoiceCluster(
       : planBalanceInvoice({
         currency: documentCurrency,
         priorPayments: result.extractedPriorPayments,
+        retainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
         lineSubtotal: result.extractedLineSubtotal,
         amountDue: extractedAmountDue,
