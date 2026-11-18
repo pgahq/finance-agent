@@ -304,14 +304,28 @@ interface Disagreement {
 }
 
 /**
+ * The Supplier ID to carry forward once the reads do not conflict on it: the one a read found when the other found
+ * none, in whichever order. `resolvePayee` still checks it against the supplier cache and the name on the form.
+ */
+function mergedPayeeSupplierId(first: ReimbursementPacket, second: ReimbursementPacket): string | null {
+  return comparableId(first.payeeSupplierId) === null && comparableId(second.payeeSupplierId) !== null
+    ? second.payeeSupplierId
+    : first.payeeSupplierId;
+}
+
+/**
  * Every fact the two reads disagree on, in a fixed order. The form amount joins the list only when asked and only
- * when both reads found one; a total found by one read and missing from the other is not a disagreement.
+ * when both reads found one; a total found by one read and missing from the other is not a disagreement. The same
+ * holds for the payee Supplier ID: only two different IDs disagree, because the ID is checked against the supplier
+ * cache and the payee's name before it is used.
  */
 function disagreements(first: ReimbursementPacket, second: ReimbursementPacket, includeAmount: boolean): Disagreement[] {
   const found: Disagreement[] = [];
   if (first.kind !== second.kind) found.push({ phrase: 'whether it is a reimbursement' });
   if (!sameName(first.payeeName, second.payeeName)) found.push({ phrase: 'the payee', field: 'payeeName' });
-  if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) found.push({ phrase: 'the payee Supplier ID' });
+  const firstId = comparableId(first.payeeSupplierId);
+  const secondId = comparableId(second.payeeSupplierId);
+  if (firstId !== null && secondId !== null && firstId !== secondId) found.push({ phrase: 'the payee Supplier ID' });
   if (includeAmount && !isBlank(first.formAmountToPay) && !isBlank(second.formAmountToPay)
     && amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
     found.push({ phrase: "the form's Amount to Pay", field: 'formAmount' });
@@ -535,10 +549,11 @@ export async function readReimbursementPacket(
       notConfirmed: [...notConfirmed],
     };
   }
-  if (!amountAgreed) return confirmFormTotal(first, second, fileList, parts, abortSignal, startedAt);
+  const agreed: ReimbursementPacket = { ...first, payeeSupplierId: mergedPayeeSupplierId(first, second) };
+  if (!amountAgreed) return confirmFormTotal(agreed, second, fileList, parts, abortSignal, startedAt);
   const agreedLabel = payableTotalLabel(first.formAmountLabel);
   const sameLabel = agreedLabel !== undefined && agreedLabel.toLowerCase() === payableTotalLabel(second.formAmountLabel)?.toLowerCase();
-  return sameLabel ? first : { ...first, formAmountLabel: null };
+  return sameLabel ? agreed : { ...agreed, formAmountLabel: null };
 }
 
 function cents(amount: number): number {
