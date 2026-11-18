@@ -1362,7 +1362,7 @@ describe('applied reimbursement outputs', () => {
     it('says in the note what the form printed and how it was used, and nothing when it printed none', () => {
       expect(reimbursementCodingNote(applied, { companyFromForm: false, defaultCompany: false })).toBe('');
       expect(reimbursementCodingNote(withCoding, { companyFromForm: false, defaultCompany: false })).toBe(
-        `Reimbursement form coding: the form prints (whitespace and quote marks normalized) coding "410", cost center "Sample 'Programs'", LOB "SPR". A coding field the email text and AP notes do not name is taken from it where it resolves (the Email Worktags section lists what was resolved); when they name different coding, the email text and AP notes win. The company did not come from the form's coding.`
+        `Reimbursement form coding: the form prints (whitespace and quote marks normalized) coding "410", cost center "Sample 'Programs'", LOB "SPR". The matching model was asked to use it for any coding field the email text and AP notes do not name (the Email Worktags section lists what was applied); when they name different coding, the email text and AP notes win. The company did not come from the form's coding.`
       );
       expect(reimbursementCodingNote(withCoding, { companyFromForm: true, defaultCompany: false })).toContain("The company came from the form's coding.");
       expect(reimbursementCodingNote(withCoding, { companyFromForm: false, defaultCompany: true })).not.toContain('did not come from');
