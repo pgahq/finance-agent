@@ -1459,6 +1459,34 @@ describe('non-USD documents (fictional euro figures)', () => {
     expect(applied.note).not.toContain('$');
   });
 
+  const trailing = (previous: string, retainage: string) => planBalanceInvoice({
+    currency: 'EUR',
+    priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: previous }],
+    retainage: { label: 'Retainage', percent: null, amount: retainage },
+    emailBalanceDue: null,
+    lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '5,000.00 €' },
+    amountDue: '2,500.00 €',
+    lines: [euroRow('Site works', '€20,000.00')],
+    poLines: undefined,
+  })!;
+
+  it.each([
+    ['2,000.00 €', '500.00 €'],
+    ['2,000.00 EUR', '500.00 EUR'],
+    ['€-2,000.00', '€ 500.00'],
+  ])('reads a pay application whose amounts print as %s and %s', (previous, retainage) => {
+    const plan = trailing(previous, retainage);
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.totalPrice).toBe('$2,500.00');
+    expect(plan.note).toContain('€2,500.00 current payment due');
+  });
+
+  it.each(['2.000,00 €', 'TBD 0', 'see attached'])('keeps the printed lines when a previous payment prints as "%s"', previous => {
+    const plan = trailing(previous, '500.00 €');
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('a printed previous payment is not a readable amount');
+  });
+
   it('writes a pay application that holds retainage with the euro symbol', () => {
     const applied = planBalanceInvoice({
       currency: 'EUR',

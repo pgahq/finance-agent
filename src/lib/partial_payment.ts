@@ -530,8 +530,10 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined, z
   return total > 0 ? total : undefined;
 }
 
-// A whole printed amount (`$61,250.00`, `€61,250.00`, `(61,250.00)`, `61250.00-`), not text that merely contains digits.
-const WHOLE_AMOUNT = /^\(?\s*[-\u2212]?\s*(?:(?:C\$|A\$|CN¥|[$€£¥]|(?:USD|EUR|GBP|CAD|AUD|CHF|JPY|CNY))\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*-?$/;
+// A whole printed amount (`$61,250.00`, `€61,250.00`, `61,250.00 EUR`, `(61,250.00)`, `61250.00-`), not text that merely contains digits.
+// European separators (`61.250,00`) stay unreadable: the amount parser would read them as 61.25.
+const CURRENCY = String.raw`(?:C\$|A\$|CN¥|[$€£¥]|USD|EUR|GBP|CAD|AUD|CHF|JPY|CNY)`;
+const WHOLE_AMOUNT = new RegExp(String.raw`^\(?\s*[-\u2212]?\s*(?:${CURRENCY}\s*)?[-\u2212]?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:${CURRENCY})?\s*\)?\s*-?$`);
 
 function readPrintedAmount(raw: string | null | undefined): number | undefined {
   const text = raw?.trim();
