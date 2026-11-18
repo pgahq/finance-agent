@@ -956,11 +956,13 @@ export function reimbursementCodingNote(
 ): string {
   const printed = formCodingText(reimbursement.formCoding);
   if (!printed) return '';
-  const company = applied.companyFromForm ? " The company came from the form's coding." : '';
+  const company = applied.companyFromForm
+    ? " The company came from the form's coding."
+    : applied.defaultCompany ? '' : " The company did not come from the form's coding.";
   const fallback = applied.defaultCompany
     ? ' No company was confirmed from the email, the AP notes, or the form, so the default coding was applied and none of this coding was used.'
     : '';
-  return `Reimbursement form coding: the form prints ${printed}. A coding field the email text and AP notes do not name is taken from it where it resolves (the Email Worktags section lists what was resolved); when they name different coding, the email text and AP notes win.${company}${fallback}`;
+  return `Reimbursement form coding: the form prints (whitespace and quote marks normalized) ${printed}. A coding field the email text and AP notes do not name is taken from it where it resolves (the Email Worktags section lists what was resolved); when they name different coding, the email text and AP notes win.${company}${fallback}`;
 }
 
 /** One paragraph for the Workday invoice notes, claiming only what was submitted. */

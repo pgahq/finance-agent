@@ -228,7 +228,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     const emailSource = company.emailOrigin === 'name'
       ? 'named in email'
       : company.emailOrigin === 'form'
-        ? "from the reimbursement form's coding"
+        ? `from the reimbursement form's coding${company.appliedReferenceId ? ` \`${company.appliedReferenceId}\`` : ''}`
         : `from email coding${company.appliedReferenceId ? ` \`${company.appliedReferenceId}\`` : ''}`;
     const from = company.appliedFrom === 'recommended' ? 'from invoice bill-to'
       : company.appliedFrom === 'po' ? 'from PO'

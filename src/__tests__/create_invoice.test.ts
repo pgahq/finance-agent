@@ -441,16 +441,24 @@ describe('create_invoice', () => {
       };
 
       it('submits the company the form codes when the email names none, and says so in the note', async () => {
-        const { submitArgs, notes, invoiceLines } = await run(
+        const { submitArgs, notes, invoiceLines, slack } = await run(
           request('Please reimburse Morgan for the hotel.'),
           '410',
           new Map([['410', [company('410', 'wid-company-410')]]])
         );
         expect(submitArgs.companyWID).toBe('wid-company-410');
         expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({ costCenterId: '72200' }));
-        expect(notes).toContain('Reimbursement form coding: the form prints coding "410", cost center "Sample Programs", LOB "SPR".');
+        expect(notes).toContain('Reimbursement form coding: the form prints (whitespace and quote marks normalized) coding "410", cost center "Sample Programs", LOB "SPR".');
         expect(notes).toContain("The company came from the form's coding.");
         expect(notes).not.toContain('none of this coding was used');
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice',
+          'success',
+          expect.any(Number),
+          expect.objectContaining({
+            company: expect.objectContaining({ appliedFrom: 'email', emailOrigin: 'form', appliedReferenceId: '410' }),
+          }),
+        );
       });
 
       it('lets a company in the AP notes win over the form company', async () => {
@@ -462,6 +470,7 @@ describe('create_invoice', () => {
         expect(submitArgs.companyWID).toBe('wid-company-912');
         expect(lookups.flatMap((call: unknown[]) => call[1])).not.toContain('410');
         expect(notes).not.toContain("The company came from the form's coding.");
+        expect(notes).toContain("The company did not come from the form's coding.");
         expect(notes).toContain('when they name different coding, the email text and AP notes win');
       });
 
@@ -486,6 +495,30 @@ describe('create_invoice', () => {
         const notes = submitArgs.buildNotes([]) as string;
         expect(notes).toContain("Company applied from the reimbursement form's coding: Sample Company Alpha.");
         expect(notes).not.toContain('Company applied from email coding');
+      });
+
+      it('looks up no form company when the form prints only a cost center, LOB, or spend category', async () => {
+        const mocks = freshRequire();
+        const { findDocumentsByReferenceIds } = require('../lib/database.js');
+        findDocumentsByReferenceIds.mockImplementation((_db: unknown, codes: string[]) =>
+          Promise.resolve(new Map(codes.map((code) => [code, code === '72200' ? [company('72200', 'wid-company-72200')] : []]))));
+        mocks.reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+        mocks.reimbursementPacket.decideReimbursement.mockResolvedValue({
+          outcome: 'apply',
+          reimbursement: { ...formReimbursement, formCoding: { codingValue: null, costCenter: '72200', lineOfBusiness: null, spendCategory: null } },
+        });
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...payeeEnrichment,
+          emailWorktags: { company: { extracted: '72200', name: 'Sample Company 72200', workdayId: 'wid-company-72200', referenceId: '72200' } },
+        });
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+          lines: [{ lineOrder: 1, description: reimbursement.description, extendedAmount: 1000 }],
+          appliedFallbacks: defaultFinalLines.appliedFallbacks,
+        });
+        await mocks.processor({ data: [request('Please reimburse Morgan for the hotel.')] } as any);
+        const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.companyWID).not.toBe('wid-company-72200');
+        expect(findDocumentsByReferenceIds.mock.calls.flatMap((call: unknown[]) => call[1])).not.toContain('72200');
       });
 
       it('never takes a company the cache finds for a code other than the one the model claimed', async () => {
