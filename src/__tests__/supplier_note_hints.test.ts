@@ -2,6 +2,7 @@ import {
   extractSupplierNoteHints,
   formatSupplierNoteHintContext,
   hasSupplierNoteHints,
+  resolveSupplierIdFromText,
   resolveSupplierIdHints,
 } from '../lib/supplier_note_hints.js';
 
@@ -101,6 +102,55 @@ describe('supplier_note_hints', () => {
       db.query.mockClear();
       await expect(resolveSupplierIdHints(db, [])).resolves.toEqual([]);
       expect(db.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resolveSupplierIdFromText', () => {
+    const queryReturning = (rows: Array<{ workday_id: string; metadata: { supplierId: string; supplierName: string } }>) =>
+      ({ query: jest.fn().mockResolvedValue(rows), close: jest.fn() });
+
+    it('returns none without a Supplier ID in the text', async () => {
+      const db = queryReturning([]);
+      await expect(resolveSupplierIdFromText(db, 'Please reimburse Jordan Reyes for travel.', 'Jordan Reyes'))
+        .resolves.toEqual({ outcome: 'none' });
+      expect(db.query).not.toHaveBeenCalled();
+    });
+
+    it('returns none for null or undefined text', async () => {
+      const db = queryReturning([]);
+      await expect(resolveSupplierIdFromText(db, undefined, 'Jordan Reyes')).resolves.toEqual({ outcome: 'none' });
+      await expect(resolveSupplierIdFromText(db, null, 'Jordan Reyes')).resolves.toEqual({ outcome: 'none' });
+    });
+
+    it('is ambiguous when the text names more than one distinct Supplier ID, and never picks one', async () => {
+      const db = queryReturning([]);
+      const result = await resolveSupplierIdFromText(db, 'Use S-100011, not S-100012.', 'Jordan Reyes');
+      expect(result).toEqual({ outcome: 'ambiguous', supplierIds: ['S-100011', 'S-100012'] });
+      expect(db.query).not.toHaveBeenCalled();
+    });
+
+    it('resolves a single Supplier ID whose cached name matches the expected name', async () => {
+      const db = queryReturning([{ workday_id: 'wid-jordan-2', metadata: { supplierId: 'S-100011', supplierName: 'JORDAN REYES' } }]);
+      const result = await resolveSupplierIdFromText(db, 'AP note: use S-100011 for this payee.', 'Jordan Reyes');
+      expect(result).toEqual({ outcome: 'resolved', supplierId: 'S-100011', workdayId: 'wid-jordan-2', supplierName: 'JORDAN REYES' });
+    });
+
+    it('is a name mismatch when the resolved supplier has a different name', async () => {
+      const db = queryReturning([{ workday_id: 'wid-hotel', metadata: { supplierId: 'S-100011', supplierName: 'HARBOR VIEW HOTEL LLC' } }]);
+      const result = await resolveSupplierIdFromText(db, 'Use S-100011.', 'Jordan Reyes');
+      expect(result).toEqual({ outcome: 'name_mismatch', supplierId: 'S-100011', workdayId: 'wid-hotel', supplierName: 'HARBOR VIEW HOTEL LLC' });
+    });
+
+    it('is not_cached when the Supplier ID named in the text is not in the supplier cache', async () => {
+      const db = queryReturning([]);
+      const result = await resolveSupplierIdFromText(db, 'Use S-100011.', 'Jordan Reyes');
+      expect(result).toEqual({ outcome: 'not_cached', supplierId: 'S-100011' });
+    });
+
+    it('excludes a resolved supplier that is on the exclusion list, even with a matching name', async () => {
+      const db = queryReturning([{ workday_id: 'wid-default', metadata: { supplierId: 'S-100011', supplierName: 'Jordan Reyes' } }]);
+      const result = await resolveSupplierIdFromText(db, 'Use S-100011.', 'Jordan Reyes', { excludeWorkdayIds: ['wid-default'] });
+      expect(result).toEqual({ outcome: 'excluded', supplierId: 'S-100011', workdayId: 'wid-default', supplierName: 'Jordan Reyes' });
     });
   });
 

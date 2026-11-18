@@ -56,6 +56,13 @@ Parameters:
       UTC weekday (0-6, 6 = Saturday) when this Workday tenant is overwritten with production data, or
       "none". Scoring skips that day and closes invoices the refresh removed instead of treating them as deletions.
     Default: "none"
+  BankingInfoTagRefId:
+    Type: String
+    Description: >-
+      Work_Queue_Tag_ID of the "Supplier Bank information is Available (priority)" Workday work queue tag, added to
+      invoices whose documents print supplier bank details. Empty disables the tag (set per environment in CircleCI).
+      Workday rejects an unknown ID.
+    Default: ""
   JevAuditMode:
     Type: String
     Description: >-
@@ -63,6 +70,18 @@ Parameters:
       verdicts and posts a Jev-scored thread reply under each audit post while the rules stay the official score;
       "on" makes Jev's verdicts the official score. Anything but "off" sends invoice values and supplier Intercom text
       to TypeSafe via Vercel AI Gateway (zero data retention), so it is off until a stack opts in.
+    Default: "off"
+    AllowedValues:
+      - "off"
+      - shadow
+      - "on"
+  JevValidationFieldMode:
+    Type: String
+    Description: >-
+      How the Workday validation-field classifier uses TypeSafe's Jev model through the AI Gateway. "off" never calls it;
+      "shadow" calls it and only logs how it compares while the gpt-5.4-mini classifier decides; "on" lets an answer at
+      probability 0.8 or more decide. Anything but "off" sends the Workday validation message, detail message, and XPath
+      to TypeSafe via Vercel AI Gateway (zero data retention), so it stays off until the vendor review is done.
     Default: "off"
     AllowedValues:
       - "off"
@@ -98,6 +117,7 @@ Globals:
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
+        WORKDAY_BANKING_INFO_TAG_REF_ID: !Ref BankingInfoTagRefId
         WORKDAY_DEFAULT_SUPPLIER_WID: 29ce29920bac1001634359c103bb0000
         WORKDAY_DEFAULT_COMPANY_NAME: Default OCR Company
         FALLBACK_FUND_ID: !Ref FallbackFundId
@@ -106,6 +126,7 @@ Globals:
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         # Read at cold start. `true` = on, `shadow` = report-only; missing resolves to empty, which leaves clustering off.
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
+        JEV_VALIDATION_FIELD_MODE: !Ref JevValidationFieldMode
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         AI_GATEWAY_API_KEY: ssm:/finance-agent/ai-gateway-api-key

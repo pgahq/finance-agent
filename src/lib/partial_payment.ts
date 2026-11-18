@@ -204,6 +204,8 @@ export function lineSubtotalReviewNote(
   subtotalFreight = 0,
   secondRead?: SecondReadOutcome | null
 ): string | undefined {
+  // A pay application's completed-to-date total is not a total of the table rows (they carry scheduled values), so there is nothing to compare.
+  if (isCompletedToDateLabel(subtotal?.label)) return undefined;
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
@@ -295,7 +297,7 @@ function poLineAmountCents(line: PurchaseOrderLine): number | undefined {
 type DepositPoSelection =
   | { status: 'no_po' }
   | { status: 'matched'; line: PurchaseOrderLine; consumed: boolean }
-  | { status: 'unmatched'; reason: string };
+  | { status: 'unmatched'; reason: string; ambiguous?: boolean };
 
 /** The one PO line whose amount is the deposit. An open line wins over a consumed one with the same amount. */
 export function selectDepositPoLine(poLines: PurchaseOrderLine[] | undefined, depositCents: number): DepositPoSelection {
@@ -305,7 +307,67 @@ export function selectDepositPoLine(poLines: PurchaseOrderLine[] | undefined, de
   if (open.length === 1) return { status: 'matched', line: open[0], consumed: false };
   if (matching.length === 1) return { status: 'matched', line: matching[0], consumed: matching[0].availableForInvoicing === false };
   if (matching.length === 0) return { status: 'unmatched', reason: `no PO line is for ${centsDollars(depositCents)}` };
-  return { status: 'unmatched', reason: `several PO lines are for ${centsDollars(depositCents)}` };
+  return { status: 'unmatched', reason: `several PO lines are for ${centsDollars(depositCents)}`, ambiguous: true };
+}
+
+const FINAL_PAYMENT_WORDS = new Set(['final', 'remaining']);
+const FINAL_PAYMENT_NOUNS = new Set(['payment', 'balance', 'invoice']);
+
+/** A PO line description that reads as covering whatever is left to pay ("Final payment...", "Remaining balance..."). */
+function isFinalPaymentLineLabel(label: string | undefined): boolean {
+  const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
+  return tokens.some(token => FINAL_PAYMENT_WORDS.has(token)) && tokens.some(token => FINAL_PAYMENT_NOUNS.has(token));
+}
+
+type BalancePoSelection =
+  | { status: 'no_po' }
+  | { status: 'matched'; line: PurchaseOrderLine; consumed: boolean; exact: boolean; described: boolean }
+  | { status: 'unmatched'; reason: string };
+
+/**
+ * The PO line that covers a remaining balance that is smaller than the PO line (the PO's one line for the full
+ * contract, used after earlier deposits, is often larger than what is left to bill). An exact-amount match
+ * (`selectDepositPoLine`'s rule) wins first and keeps its messages. When `allowNonExactMatch` is false (AP has
+ * not confirmed this trigger for a non-exact match — currently every trigger but printed deposits reconciling
+ * the gap), that exact-match result is the only thing this returns.
+ *
+ * Short of an exact match, there is at most one other candidate to consider: the one PO line described as a
+ * final or remaining payment, or the PO's only line when none is described that way. Two or more lines described
+ * as a final or remaining payment are always left unmatched for AP to pick between, regardless of their amounts
+ * (covering, short, or unreadable) or whether one is consumed, because the description — not the amount — is
+ * what makes a line a plausible candidate at all, and we cannot tell which one the invoice is paying off. The
+ * sole remaining candidate is matched only when its amount is at least the balance and it is not already fully
+ * invoiced or closed (unlike the deposit rule, a non-exact match never takes a consumed line, because the final
+ * invoice line would then be coded from it but not linked to it — see `markConsumedPoLineReferences` — and the
+ * overage note's "booked on this line" would be false). A candidate smaller than the balance, one whose amount
+ * cannot be read, or one that is consumed is left unmatched rather than guessed at.
+ */
+export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, balanceCents: number, allowNonExactMatch = true): BalancePoSelection {
+  if (!poLines?.length) return { status: 'no_po' };
+
+  const exact = selectDepositPoLine(poLines, balanceCents);
+  if (exact.status === 'matched') return { ...exact, exact: true, described: false };
+  if (!allowNonExactMatch) return exact;
+  if (exact.status === 'unmatched' && exact.ambiguous) return exact;
+
+  const described = poLines.filter(line => isFinalPaymentLineLabel(line.description));
+  if (described.length > 1) {
+    return { status: 'unmatched', reason: `${described.length} PO lines could be the remaining-balance line; check which one applies` };
+  }
+  const candidate = described[0] ?? (poLines.length === 1 ? poLines[0] : undefined);
+  if (!candidate) return exact;
+  const cents = poLineAmountCents(candidate);
+  if (cents == null) return exact;
+  if (cents < balanceCents) {
+    return {
+      status: 'unmatched',
+      reason: `the PO's final-payment line is only ${centsDollars(cents)}, less than the ${centsDollars(balanceCents)} amount due`,
+    };
+  }
+  if (candidate.availableForInvoicing === false) {
+    return { status: 'unmatched', reason: "the PO's final-payment line is already fully invoiced or closed" };
+  }
+  return { status: 'matched', line: candidate, consumed: false, exact: cents === balanceCents, described: described.length === 1 };
 }
 
 export interface PartialPaymentInput {
@@ -414,8 +476,17 @@ export interface BalanceInvoiceInput {
 }
 
 const BALANCE_NOTE_LABEL = 'Balance invoice';
+const PAY_APPLICATION_NOTE_LABEL = 'Pay application';
 
-function balanceNotApplied(reason: string): PartialPaymentPlan {
+function balanceNotApplied(reason: string, payApplication = false): PartialPaymentPlan {
+  if (payApplication) {
+    return {
+      applied: false,
+      noteLabel: PAY_APPLICATION_NOTE_LABEL,
+      note: `This looks like a construction pay application, but ${reason}, so the printed lines were submitted unchanged. The submitted lines may not match the current payment due; check before approving.`,
+      slackLines: [`Pay application not applied: ${reason}.`],
+    };
+  }
   return {
     applied: false,
     noteLabel: BALANCE_NOTE_LABEL,
@@ -436,6 +507,52 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined): 
   return total;
 }
 
+/** A pay application's base line: "Total Completed and Stored to Date" (G702 line 4), which is what the payment due is computed from. */
+function isCompletedToDateLabel(label: string | null | undefined): boolean {
+  const tokens = (normalizeLabel(label) ?? '').split(' ');
+  return tokens.includes('completed') && tokens.includes('stored') && tokens.includes('date');
+}
+
+/** Previous certificates on a pay application. The first application prints none or $0.00, which is zero paid, not unreadable. */
+function payApplicationPriorCents(payments: PrintedPriorPayment[] | null | undefined): number | undefined {
+  if (!payments?.length) return 0;
+  let total = 0;
+  for (const payment of payments) {
+    const amount = parseExtractedLineAmount(payment.amount);
+    if (amount == null) return undefined;
+    total += toCents(Math.abs(amount));
+  }
+  return total;
+}
+
+function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
+  return payments?.length === 1 ? `"${printable(payments[0].label)}"` : 'the previous payments';
+}
+
+/** "less X" for a deduction row, without repeating the word when the printed label already starts with it. */
+function lessText(payments: PrintedPriorPayment[] | null | undefined): string {
+  const text = paymentsText(payments);
+  return /^"\s*less\b/i.test(text) ? 'after' : 'less';
+}
+
+/**
+ * The PO line a pay application's current payment is coded to. A line equal to the payment wins (the deposit rule);
+ * a pay application is normally billed against one PO line for the whole contract, so a single open line equal to
+ * the total to date, or a PO with only one line that covers that total (what has been billed through this
+ * application), is also used. The PO data has no remaining-amount field, so covering the total is the check. Anything
+ * else leaves the line unpinned for the merge to code, and the note says so.
+ */
+function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, dueCents: number, baseCents: number): DepositPoSelection | { status: 'unpinned'; reason: string } {
+  const exact = selectDepositPoLine(poLines, dueCents);
+  if (exact.status !== 'unmatched') return exact;
+  const lines = poLines ?? [];
+  const baseLines = lines.filter(line => poLineAmountCents(line) === baseCents && line.availableForInvoicing !== false);
+  if (baseLines.length === 1) return { status: 'matched', line: baseLines[0], consumed: false };
+  const onlyLineCents = lines.length === 1 ? poLineAmountCents(lines[0]) : undefined;
+  if (onlyLineCents != null && onlyLineCents >= baseCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
+  return { status: 'unpinned', reason: `${exact.reason}, and no open PO line can be picked for the ${centsDollars(baseCents)} total to date (an only line must cover it), so the PO line was left to the line merge` };
+}
+
 /**
  * A remaining-balance invoice prints the full contract or project total, but only what is left after earlier
  * payments is due. The submitted invoice must bill the amount due, so the printed lines are replaced by one line
@@ -452,50 +569,117 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const printedBase = parseCanonicalChargeAmount(input.lineSubtotal?.amount);
   const linesCents = sumExtractedLineCents(input.lines);
   const contractCents = printedBase != null ? toCents(printedBase) : linesCents;
-  if (contractCents == null || contractCents <= dueCents) return undefined;
+  // A pay application bills what was completed since the last certificate, so its printed base is the work completed to date.
+  const payApplication = printedBase != null && isCompletedToDateLabel(input.lineSubtotal?.label);
+  const paidCents = payApplication ? payApplicationPriorCents(input.priorPayments) : priorPaymentCents(input.priorPayments);
+  if (contractCents == null || contractCents < dueCents) return undefined;
+  if (contractCents === dueCents && !(payApplication && paidCents === 0)) return undefined;
   if (linesCents != null && linesCents <= dueCents) return undefined;
 
-  const paidCents = priorPaymentCents(input.priorPayments);
   const paymentsExplainGap = paidCents != null && contractCents - paidCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
-  // The email alone must sit beside a printed contract total; a line sum can read high for other reasons.
-  const emailSaysBalance = printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
+  // The email alone must sit beside a printed contract total; a line sum can read high for other reasons. On a pay application
+  // it never stands in for the payment arithmetic: figures that do not add up are a warning sign, not something an email settles.
+  const emailSaysBalance = !payApplication && printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
   if (!paymentsExplainGap && !emailSaysBalance) {
-    if (paidCents == null) return undefined;
-    return balanceNotApplied(`the printed payments total ${centsDollars(paidCents)}, which leaves ${centsDollars(contractCents - paidCents)} of the ${centsDollars(contractCents)} contract total, not the amount due ${centsDollars(dueCents)}`);
+    if (paidCents == null) {
+      return payApplication
+        ? balanceNotApplied('a previous payment amount could not be read, so the pay application arithmetic could not be checked', true)
+        : undefined;
+    }
+    if (payApplication) {
+      return balanceNotApplied(
+        paidCents === 0 && !input.priorPayments?.length
+          ? `the work completed to date ${centsDollars(contractCents)} is not the current payment due ${centsDollars(dueCents)}, and no previous payments were read`
+          : `the work completed to date ${centsDollars(contractCents)} less ${centsDollars(paidCents)} in previous payments is ${centsDollars(contractCents - paidCents)}, not the current payment due ${centsDollars(dueCents)}`,
+        true
+      );
+    }
+    return balanceNotApplied(
+      `the printed payments total ${centsDollars(paidCents)}, which leaves ${centsDollars(contractCents - paidCents)} of the ${centsDollars(contractCents)} contract total, not the amount due ${centsDollars(dueCents)}`,
+      false
+    );
   }
 
   const freight = parseCanonicalChargeAmount(input.freightAmount) ?? 0;
   const tax = parseCanonicalChargeAmount(input.taxAmount) ?? 0;
   if (tax > 0 || freight > 0) {
-    return balanceNotApplied('tax or freight is also printed, and balance invoices with header charges are not booked automatically');
+    return balanceNotApplied(
+      payApplication
+        ? 'tax or freight is also printed, and pay applications with header charges are not booked automatically'
+        : 'tax or freight is also printed, and balance invoices with header charges are not booked automatically',
+      payApplication
+    );
   }
 
-  const selection = selectDepositPoLine(input.poLines, dueCents);
-  if (selection.status === 'unmatched') return balanceNotApplied(selection.reason);
+  // AP has confirmed a non-exact PO-line match only for the signal where printed deposits reconcile the
+  // contract total to the amount due; an email-only balance signal keeps the older exact-match-only rule
+  // until AP sees that case too. A pay application keeps its own PO-line rule (the whole-contract line a
+  // pay application is normally billed against), not the non-exact final-payment match.
+  const selection = payApplication
+    ? selectPayApplicationPoLine(input.poLines, dueCents, contractCents)
+    : selectBalancePoLine(input.poLines, dueCents, paymentsExplainGap);
+  if (selection.status === 'unmatched') return balanceNotApplied(selection.reason, payApplication);
 
   const label = printable(input.lineSubtotal?.label) || printable(input.lines[0]?.description) || 'Contract total';
   const dueText = centsDollars(dueCents);
   const contractText = centsDollars(contractCents);
   const lineCount = input.lines.length;
   const lineText = lineCount > 0 ? ` (${lineCount} printed line${lineCount === 1 ? '' : 's'})` : '';
+  const amount = formatChargeDollars(dueCents / 100);
+  const poLineNote = selection.status === 'unpinned'
+    ? ` ${selection.reason.charAt(0).toUpperCase()}${selection.reason.slice(1)}; check the PO line coding before approving.`
+    : selection.status === 'matched' && selection.consumed
+      ? ` The PO line for this ${payApplication ? 'pay application' : 'amount'} is already fully invoiced or closed; check whether this ${payApplication ? 'pay application' : 'balance'} was billed before approving.`
+      : '';
+  const poLines = selection.status === 'matched' ? { poLines: [selection.line] } : {};
+  const slackPoLines = poLineNote ? [poLineNote.trim()] : [];
+
+  if (payApplication) {
+    return {
+      applied: true,
+      noteLabel: PAY_APPLICATION_NOTE_LABEL,
+      line: { description: `Pay application - current payment due (${label} ${contractText})`, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1 },
+      ...poLines,
+      note: `"${label}" is ${contractText}${paidCents === 0 ? (input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed') : `, ${lessText(input.priorPayments)} ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}`}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
+      amountDueNote: `pay application, ${contractText} to date`,
+      slackLines: [
+        `${label}: ${contractText} to date${paidCents === 0 ? (input.priorPayments?.length ? ', previous payments $0.00' : ', no previous payments') : `, less ${centsDollars(paidCents as number)} previous payments`}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
+        ...slackPoLines,
+      ],
+    };
+  }
+
   const basis = paymentsExplainGap
     ? `"${label}" is ${contractText}, and ${centsDollars(paidCents as number)} was already paid, which leaves the ${dueText} amount due${lineText}.`
     : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. ${paidCents != null ? `The document prints ${centsDollars(paidCents)} in payments, which leaves ${centsDollars(contractCents - paidCents)}, not the amount due; check the payments against the PDF.` : 'The document prints no payments that account for the difference.'}`;
-  const consumedNote = selection.status === 'matched' && selection.consumed
-    ? ' The PO line for this amount is already fully invoiced or closed; check whether this balance was billed before approving.'
+  // payApplication is false past this point, so `selection` is what selectBalancePoLine returned, not selectPayApplicationPoLine's shape.
+  const balanceSelection = selection as BalancePoSelection;
+  // The selected PO line can be larger than the balance. For a line described as a final or remaining payment,
+  // that is expected, not a problem to flag: it was sized for the full remaining contract before this invoice's
+  // own deposits were netted off, so AP follows up with the PO owner about the PO itself. The sole-line fallback
+  // carries no such description, so the note only states the overage: an undescribed PO line can read larger for
+  // other reasons (for example a deposit already billed against the same line), and telling AP to chase the PO
+  // owner for "the difference" would assume a cause the code has not checked.
+  const overageLine = balanceSelection.status === 'matched' && !balanceSelection.exact ? balanceSelection.line : undefined;
+  const overageLineCents = overageLine ? poLineAmountCents(overageLine) : undefined;
+  const overageCents = overageLineCents != null ? overageLineCents - dueCents : 0;
+  const overageLineText = overageLine ? `the PO's "${printable(overageLine.description) || 'final payment'}" line (${centsDollars(overageLineCents as number)})` : '';
+  const overageDescribed = balanceSelection.status === 'matched' && balanceSelection.described;
+  const overageNote = overageCents > 0
+    ? ` The invoice was booked for ${dueText} on ${overageLineText}, ${centsDollars(overageCents)} under that line${overageDescribed ? '; AP should follow up with the PO owner about the difference.' : '.'}`
     : '';
-  const amount = formatChargeDollars(dueCents / 100);
   return {
     applied: true,
     noteLabel: BALANCE_NOTE_LABEL,
     line: { description: `${label} (balance due of ${contractText})`, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1 },
-    ...(selection.status === 'matched' ? { poLines: [selection.line] } : {}),
-    note: `${basis} The invoice bills the balance due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${consumedNote}`,
+    ...poLines,
+    note: `${basis} The invoice bills the balance due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}${overageNote}`,
     amountDueNote: `remaining balance of ${contractText}`,
     slackLines: [
       `${label}: ${contractText} contract total, ${dueText} due${paymentsExplainGap ? ` after ${centsDollars(paidCents as number)} paid` : paidCents != null ? ` (remaining balance per the email; the PDF prints ${centsDollars(paidCents)} in payments, which does not match, so check them)` : ' (remaining balance per the email)'}. Submitted as one balance line, not the printed lines.`,
-      ...(consumedNote ? ['The PO line for this amount is already fully invoiced or closed; check whether this balance was billed before approving.'] : []),
+      ...slackPoLines,
+      ...(overageNote ? [`Booked ${dueText} on ${overageLineText}, ${centsDollars(overageCents)} under that line.`] : []),
     ],
   };
 }

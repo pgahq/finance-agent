@@ -19,6 +19,7 @@ import { reimbursementFormMathPrompt, type ReimbursementFormMath } from '../prom
 import { defaultModel } from '../lib/models.js';
 import { attachmentContentParts } from '../lib/invoice_ocr.js';
 import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
+import { composeSuppliersInvoiceNumber } from '../lib/invoice_memo.js';
 import {
   applyReimbursementToEnrichment,
   decideReimbursement,
@@ -106,6 +107,29 @@ describe('readReimbursementPacket', () => {
     const read = await readReimbursementPacket(attachments, { subject: 'Hotel reimbursement' } as never);
     expect(read?.formAmountToPay).toBe('$1,000.00');
     expect(aiResponse.mock.calls[0][0].messages[0].content[0].text).toContain('Subject: Hotel reimbursement');
+  });
+
+  it('shows the model only the message that carried the attachment, not the rest of the conversation', async () => {
+    // A later Intercom note (plainTextBody) must not reach the two independent packet reads: a note mentioning a
+    // Supplier ID can be noticed by one read and missed by the other, which disagrees the packet into manual entry
+    // before resolvePayee ever runs. The trusted-note lookup reads the full conversation separately, in code
+    // (resolveSupplierIdFromText), not through the model.
+    aiResponse.mockResolvedValue(packet());
+    await readReimbursementPacket(attachments, {
+      subject: 'Hotel reimbursement',
+      messageBody: 'Please see the attached form.',
+      plainTextBody: 'Please see the attached form.\n\nAP note: this payee is Supplier ID S-100011.',
+    } as never);
+    const text = aiResponse.mock.calls[0][0].messages[0].content[0].text;
+    expect(text).toContain('Body: Please see the attached form.');
+    expect(text).not.toContain('AP note');
+  });
+
+  it('falls back to plainTextBody when the message has no messageBody of its own', async () => {
+    aiResponse.mockResolvedValue(packet());
+    await readReimbursementPacket(attachments, { subject: 'Hotel reimbursement', plainTextBody: 'Please see the attached form.' } as never);
+    const text = aiResponse.mock.calls[0][0].messages[0].content[0].text;
+    expect(text).toContain('Body: Please see the attached form.');
   });
 
   it('throws on an unexpected shape so a packet is never silently booked as an invoice', async () => {
@@ -230,6 +254,8 @@ describe('packetDisagreement', () => {
 
   it('flags a different form date, including the same date in another format only when it differs', () => {
     expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: 'Nov 2, 2026' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: '11.02.26' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ formDate: '11.02.2026' }), packet({ formDate: '11.03.2026' }))).toBe('the form date');
     expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: '11/03/2026' }))).toBe('the form date');
     expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: null }))).toBe('the form date');
   });
@@ -811,6 +837,41 @@ describe('decideReimbursement', () => {
     expect(findDocuments).not.toHaveBeenCalled();
   });
 
+  it('matches by a Supplier ID named only in the Intercom conversation when the form prints none, tagged as conversation-sourced', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    const decision = await decideReimbursement(db as never, packet(), {
+      emailContext: { plainTextBody: 'AP note: this payee is Supplier ID S-000123.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', supplierId: 'S-000123', matchedBy: 'supplier_id_conversation' } } });
+    expect(findDocuments).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the name match, rather than stopping, when a conversation-named ID belongs to someone else', async () => {
+    // The ID is real but unrelated to this payee (a hotel's Supplier ID, an old invoice, a signature); treating it
+    // as a stop would newly block a packet that a unique name match would have booked before this PR.
+    db.query.mockResolvedValue([{ workday_id: 'wid-other', metadata: { supplierId: 'S-000999', supplierName: 'HARBOR VIEW HOTEL LLC' } }]);
+    const decision = await decideReimbursement(db as never, packet(), {
+      emailContext: { plainTextBody: 'Folio reference S-000999 is attached for backup.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', matchedBy: 'name' } } });
+  });
+
+  it('prefers a printed Supplier ID over one named in the conversation when they disagree', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    const decision = await decideReimbursement(db as never, packet({ payeeSupplierId: 'S-000123' }), {
+      emailContext: { plainTextBody: 'AP note: actually use S-000999 instead.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', supplierId: 'S-000123', matchedBy: 'supplier_id' } } });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the name match when the conversation names no Supplier ID and none is printed', async () => {
+    const decision = await decideReimbursement(db as never, packet(), {
+      emailContext: { plainTextBody: 'Please reimburse Morgan Ellery for the hotel.' } as never,
+    });
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { payee: { workdayId: 'wid-ellery', matchedBy: 'name' } } });
+  });
+
   it('stops when the printed Supplier ID belongs to a different name', async () => {
     db.query.mockResolvedValue([{ workday_id: 'wid-other', metadata: { supplierId: 'S-000123', supplierName: 'HARBOR VIEW HOTEL LLC' } }]);
     const decision = await decideReimbursement(db as never, packet({ payeeSupplierId: 'S-000123' }));
@@ -846,10 +907,24 @@ describe('decideReimbursement', () => {
   });
 
   it('stops when the form has no readable date, since the draft would have no number', async () => {
-    for (const formDate of [null, 'last Tuesday']) {
+    for (const formDate of [null, 'last Tuesday', '13.01.2026', '11.10-26']) {
       const decision = await decideReimbursement(db as never, packet({ formDate }));
       expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('no readable date') } });
     }
+  });
+
+  it('books a form date printed with dots exactly like the same date with slashes', async () => {
+    const slashed = await decideReimbursement(db as never, packet({ formDate: '11/10/2026' }));
+    if (slashed.outcome !== 'apply') throw new Error('expected apply');
+    for (const formDate of ['11.10.26', '11.10.2026']) {
+      const dotted = await decideReimbursement(db as never, packet({ formDate }));
+      expect(dotted).toEqual(slashed);
+    }
+    expect(slashed.reimbursement.invoiceDate).toBe('2026-11-10');
+    expect(composeSuppliersInvoiceNumber({
+      invoiceDate: slashed.reimbursement.invoiceDate,
+      supplierName: slashed.reimbursement.payee.supplierName,
+    })).toBe('MORG111026');
   });
 
   it('stops when the packet names no payee', async () => {
@@ -1002,5 +1077,29 @@ describe('applied reimbursement outputs', () => {
       "Amount: $1,000.00 from the form's Amount to Pay",
       'Receipts and folios were not booked as invoice lines.',
     ]);
+  });
+
+  it('says the Supplier ID came from the Intercom conversation, not the form, when matched that way', () => {
+    const conversationMatch: AppliedReimbursement = { ...applied, payee: { ...applied.payee, matchedBy: 'supplier_id_conversation' } };
+    expect(reimbursementNote(conversationMatch)).toContain(
+      'Reimbursement packet: invoiced to S-000123 MORGAN T ELLERY for $1,000.00, the Amount to Pay on the reimbursement form.'
+    );
+    const enrichment = applyReimbursementToEnrichment({ supplier: { status: 'not_found' } } as never, conversationMatch);
+    expect(enrichment.supplier.reason).toContain('matched Workday supplier S-000123 MORGAN T ELLERY by Supplier ID S-000123 named in the Intercom conversation, and name.');
+    expect(reimbursementSlackLines(conversationMatch)).toContainEqual('Payee: MORGAN T ELLERY (S-000123), matched by Supplier ID S-000123 named in the Intercom conversation, and name');
+  });
+
+  it('tells AP when a Supplier ID named in the conversation did not match and was not used', () => {
+    const withMismatch: AppliedReimbursement = {
+      ...applied,
+      payee: { ...applied.payee, conversationIdMismatch: { supplierId: 'S-000999', supplierName: 'HARBOR VIEW HOTEL LLC' } },
+    };
+    const mismatchSentence = 'A Supplier ID named in the Intercom conversation, S-000999 (HARBOR VIEW HOTEL LLC), does not match Morgan Ellery and was not used.';
+    expect(reimbursementNote(withMismatch)).toContain(mismatchSentence);
+    const enrichment = applyReimbursementToEnrichment({ supplier: { status: 'not_found' } } as never, withMismatch);
+    expect(enrichment.supplier.reason).toContain(mismatchSentence);
+    expect(reimbursementSlackLines(withMismatch)).toContainEqual(`Note: ${mismatchSentence}`);
+    // Unaffected when there is nothing to report.
+    expect(reimbursementNote(applied)).not.toContain('Supplier ID named in the Intercom conversation');
   });
 });

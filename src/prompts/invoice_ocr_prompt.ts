@@ -47,7 +47,7 @@ export const InvoiceOcrSchema = z.object({
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00"). Never compute it from a rate.'),
-  })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Return an empty array when there is none.'),
+  })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount, except a payroll or employer tax row on an invoice that bills payroll cost (that stays a line item). Return an empty array when there is none.'),
   extractedSummaryCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
     amount: z.string().describe('The amount as printed, keeping a printed minus sign or parentheses (e.g. "$5.00", "-$13.80", "($13.80)"). Empty string when only a rate is printed. Never compute it from a rate.'),
@@ -55,7 +55,7 @@ export const InvoiceOcrSchema = z.object({
   extractedLineSubtotal: z.object({
     label: z.string().describe('The exact printed label of the line-table total (e.g. "Total Cost of Contracted Services", "Sub Total").'),
     amount: z.string().describe('The amount as printed (e.g. "$38,255.00").'),
-  }).describe('The total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment. Use empty strings when none is printed.'),
+  }).describe('The total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment. On a construction pay application (AIA G702) it is the "Total Completed and Stored to Date" figure instead. Use empty strings when none is printed.'),
   extractedPartialPayment: z.object({
     label: z.string().describe('The exact printed label of the deposit or advance-payment row (e.g. "Advance Deposit Due").'),
     percent: z.string().describe('The percentage printed for the deposit (e.g. "90%"). Empty string when none is printed.'),
@@ -65,6 +65,7 @@ export const InvoiceOcrSchema = z.object({
     label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
     amount: z.string().describe('The amount as printed (e.g. "$17,977.50"). Never compute it.'),
   })).describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Return an empty array when none is printed.'),
+  bankingInfoPrinted: z.boolean().describe('True when any document prints bank details a payer would use to send money to the supplier: a bank account number, a routing or ABA number, a SWIFT/BIC or IBAN, or ACH or wire instructions. False otherwise. Never copy the numbers themselves.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -163,16 +164,20 @@ function fullYear(year: string): number {
 /**
  * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026), or a
  * month name with a four-digit year ("Nov 11, 2026", "11th November 2026"). Two-digit years are 20YY. Anything
- * else is null.
+ * else is null. A dot separator (11.11.26) is read the same way only when `dottedDates` is set: dots are also how
+ * day.month.year dates are written outside the US, so only a caller that can accept a month/day reading of a
+ * dotted date opts in.
  */
-export function normalizePrintedDate(value: string | null | undefined): string | null {
+export function normalizePrintedDate(value: string | null | undefined, options: { dottedDates?: boolean } = {}): string | null {
   const text = value?.trim();
   if (!text) return null;
 
   const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return isoCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
 
-  const numeric = text.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
+  const numeric = text.match(options.dottedDates
+    ? /^(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})$/
+    : /^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
   if (numeric) return isoCalendarDate(fullYear(numeric[4]), Number(numeric[1]), Number(numeric[3]));
 
   const monthFirst = text.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})$/i);
@@ -292,11 +297,13 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ## Part 4.5: Line Total and Deposits
 
-Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total. A document can print several subtotals, one per section and also a combined one that covers only some of the rows. Report the combined total of the line table, even when it leaves a separately printed row out. For example, an invoice with "Rental Subtotal $3,067.00", "Sales/Misc Subtotal $680.88", and "Agreement Subtotal $3,591.67", where a separately printed "Fuel" row of $156.21 follows the Agreement Subtotal, must return extractedLineSubtotal { label: "Agreement Subtotal", amount: "$3,591.67" }. When the document prints only per-section subtotals and no combined total, return empty strings; never add section subtotals together. Extract every row of every section whether or not the reported total includes it.
+Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows (a construction pay application is the exception described below), before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total. A document can print several subtotals, one per section and also a combined one that covers only some of the rows. Report the combined total of the line table, even when it leaves a separately printed row out. For example, an invoice with "Rental Subtotal $3,067.00", "Sales/Misc Subtotal $680.88", and "Agreement Subtotal $3,591.67", where a separately printed "Fuel" row of $156.21 follows the Agreement Subtotal, must return extractedLineSubtotal { label: "Agreement Subtotal", amount: "$3,591.67" }. When the document prints only per-section subtotals and no combined total, return empty strings; never add section subtotals together. Extract every row of every section whether or not the reported total includes it.
 
 When the invoice bills a deposit, advance, or partial payment instead of the full contract total, populate \`extractedPartialPayment\` with the printed label of the deposit row, the percentage when one is printed (for example "90%"), and the deposit amount as printed. For example, an invoice with Total Cost of Contracted Services $38,255.00, Deposit Required Upon Signing 90%, and Advance Deposit Due $34,429.50 must return extractedLineSubtotal { label: "Total Cost of Contracted Services", amount: "$38,255.00" }, extractedPartialPayment { label: "Advance Deposit Due", percent: "90%", amount: "$34,429.50" }, and extractedAmountDue "$34,429.50". Never compute an amount from a percentage. Leave extractedPartialPayment empty for a final invoice that only shows a deposit already paid ("Less deposit paid"), for retainers, and for ordinary invoices.
 
 When the document shows payments, deposits, or credits already received that reduce the amount due (for example "Less deposit paid", "Previous payments", "Payments received", or "Payments applied"), list each such row in \`extractedPriorPayments\` with its exact printed label and amount as printed. These rows are settled, so they never go in \`extractedPartialPayment\`, \`extractedLineSubtotal\`, or the other charge fields. For example, an invoice with Total Contract Price $23,887.00, Payments Received $17,977.50, and Balance Due $5,909.50 must return extractedLineSubtotal { label: "Total Contract Price", amount: "$23,887.00" }, extractedPriorPayments [{ label: "Payments Received", amount: "$17,977.50" }], and extractedAmountDue "$5,909.50". Never compute an amount, and return an empty array when the document prints no such row.
+
+A construction pay application or progress billing (an AIA G702 "Application and Certificate for Payment") bills only what was earned since the last certificate, so the contract sum is never the amount to book. Its lines run: 3 Contract Sum to Date, 4 Total Completed and Stored to Date, 5 Retainage, 6 Total Earned Less Retainage, 7 Less Previous Certificates for Payment, 8 Current Payment Due, and 9 Balance to Finish. Put the work completed to date in \`extractedLineSubtotal\`: "Total Completed and Stored to Date" (line 4) when the form prints it, and "Contract Sum to Date" (line 3) only when no completed-to-date figure is printed, which is not expected on a G702 (the two match only when the work is 100% done). On a pay application this overrides the line-table total above. List "Less Previous Certificates for Payment" in \`extractedPriorPayments\` and put "Current Payment Due" in \`extractedAmountDue\`. "Balance to Finish, including retainage" (line 9) and the per-line BALANCE column are what remains of the contract, never a payment, so never list them in \`extractedPriorPayments\`. For example, a pay application with Contract Sum to Date $612,500.00, Total Completed and Stored to Date $551,250.00, Less Previous Certificates for Payment $367,500.00, Current Payment Due $183,750.00, and Balance to Finish $61,250.00 must return extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$551,250.00" } (not the contract sum), extractedPriorPayments [{ label: "Less Previous Certificates for Payment", amount: "$367,500.00" }] (the $61,250.00 balance to finish is not listed), and extractedAmountDue "$183,750.00". Never compute an amount.
 
 ---
 
@@ -316,7 +323,7 @@ Read the invoice attachment and extract the tax amount. It may be labeled as "Ta
 
 CRITICAL: If the invoice shows a "Shipping and Handling" or similar row with no amount, and a separate "Sales Tax" row with an amount, do NOT put the sales tax amount in \`extractedFreightAmount\`. Put the sales tax amount in \`extractedTaxAmount\` with label "Sales Tax", and leave \`extractedFreightAmount\` null. For example, an invoice with Sub-Total $8,514.38, blank Shipping and Handling, Sales Tax $510.86, and Invoice Total $9,025.24 must return extractedFreightAmount null, extractedFreightLabel null, extractedTaxAmount "$510.86", extractedTaxLabel "Sales Tax".
 
-If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no tax amount could be found or if it is ambiguous, omit both \`extractedTaxAmount\` and \`extractedTaxLabel\`.
+If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. The one exception is employer payroll tax: a "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax and stays a line item (Part 5.6). If no tax amount could be found or if it is ambiguous, omit both \`extractedTaxAmount\` and \`extractedTaxLabel\`.
 
 ---
 
@@ -325,11 +332,13 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5% EnvChg Tax". Put the main sales tax in \`extractedTaxAmount\`. List every additional row whose printed label says tax in \`extractedOtherCharges\` with its exact printed label and printed amount, even when the row is printed in the line table, and do not put it in \`extractedInvoiceLines\`.
 
 - A row in the line table that prints a quantity, a unit price, and its own extended amount (for example \`1 PROPERTY TAX SURCHARGE 20.220 EACH 20.22\`) is a priced line item, not an additional tax row, even when its label contains the word tax. Return it in \`extractedInvoiceLines\`. Rows that print only a label and an amount (\`Sales Tax\`, \`5% EnvChg Tax\`) are tax rows.
+- Header tax is only sales and use tax. A "Taxes" or "Tax" row on an invoice that bills payroll cost back to PGA (its line items are wages, 401K, benefits, medical, workers comp, and similar) is employer payroll tax, a billed charge, even when the invoice also prints "Sales Tax Amount $0.00". Do not list it here or in \`extractedTaxAmount\`: return it in \`extractedInvoiceLines\` with the other rows, with its printed amount. A row labeled payroll tax, employer tax, employment tax, or FICA is the same.
 - Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them (freight in the freight fields, everything else as a line item).
 - Copy the label exactly as printed. Do not rename a row or add the word "Tax" to a label that does not print it.
 - Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that row out. Never compute an amount from a rate.
 - Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
 - For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, and a "5% EnvChg Tax" row of $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }].
+- For example, an invoice whose rows are Wages $4,000.00, 401K $200.00, Benefits $300.00, Medical $250.00, Workers Comp $150.00, and Taxes $500.00, with "Sales Tax Amount $0.00" and Amount Due $5,400.00, must return all six rows in extractedInvoiceLines, extractedTaxAmount "$0.00", extractedTaxLabel "Sales Tax Amount", and extractedOtherCharges [].
 - If there is no additional tax row, return an empty array.
 
 ---
@@ -389,6 +398,18 @@ Extract these identifiers independently when they appear on the invoice or in a 
 
 ---
 
+## Part 7.6: Bank Details
+
+Set \`bankingInfoPrinted\` to true when any attached document, including a supporting file, prints bank details a payer would use to send money to the supplier: a bank account number, a routing or ABA number, a SWIFT/BIC or IBAN, or ACH or wire payment instructions. An electronic-payments block that lists an ABA or routing number with an account number counts, as does a notice that the supplier's banking information changed when it prints those details. Do not copy any bank number or account name into any other field; report only the true or false.
+
+Set it to false when the documents print only:
+- a mailing address for checks ("Remit To", "Make checks payable to")
+- an online payment link, a payment portal, or a card payment option
+- PGA's own account number, customer ID, or invoice number
+- a notice that banking details changed or a request to call or email for them, with no bank details printed
+
+---
+
 ## Part 8: Payment Terms
 
 If payment terms are printed on the invoice (e.g. "Net 30", "Net 60", "Due on Receipt"), populate \`extractedPaymentTerms\` with the text as it appears. If no payment terms are printed, return an empty string.
@@ -414,7 +435,7 @@ Extract the individual line items from the invoice document:
 
 Extract every printed row, in document order. Two rows with the same description, quantity, and price are two separate charges when they are printed under different dates, events, or section headings, or in different places; return both. Only skip a row that is clearly the same printed row repeated, such as a page header or a table carried over onto the next page.
 
-Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
+Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax", "EnvChg Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead. The exception is employer payroll tax: on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp), a "Taxes" row is a line item, so return it as a row (Part 5.6).
 Exclude a single freight, shipping, handling, or delivery charge from the lines — capture it in \`extractedFreightAmount\` instead. When several separate delivery, pickup, or similar rows are printed as priced table rows (Part 5), return every one of them as a line.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.

@@ -19,6 +19,13 @@ describe('SAM template', () => {
     expect(globals).toMatch(/MaximumRetryAttempts:\s*0\b/);
   });
 
+  it('wires the banking-info tag from a per-environment parameter set for dev and production', () => {
+    expect(globals).toMatch(/WORKDAY_BANKING_INFO_TAG_REF_ID:\s*!Ref BankingInfoTagRefId/);
+    expect(globals).toMatch(/BankingInfoTagRefId:[\s\S]*?Default: ""/);
+    expect(circleci).toMatch(/BankingInfoTagRefId=\$BANKING_INFO_TAG_REF_ID/);
+    expect(circleci.match(/BANKING_INFO_TAG_REF_ID:\s*Supplier_Bank_Information/g)).toHaveLength(2);
+  });
+
   it('wires INTERCOM_APP_ID from the IntercomAppId parameter', () => {
     expect(globals).toMatch(/IntercomAppId:/);
     expect(globals).toMatch(/INTERCOM_APP_ID:\s*!Ref IntercomAppId/);
@@ -112,6 +119,16 @@ describe('SAM template', () => {
       expect(template.match(/JEV_AUDIT_MODE:/g)).toHaveLength(2);
       expect(template).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
       expect(template).not.toMatch(/TYPESAFE_API_KEY/);
+    });
+
+    it('keeps the Jev validation-field classifier off by default, opt-in per stack from CircleCI, with no new secret', () => {
+      const parameter = globals.match(/JevValidationFieldMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
+      expect(parameter).toMatch(/Default: "off"/);
+      expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
+      expect(circleci).toMatch(/JevValidationFieldMode=\$\{JEV_VALIDATION_FIELD_MODE:-off\}/);
+      expect(template).toMatch(/JEV_VALIDATION_FIELD_MODE:\s*!Ref JevValidationFieldMode/);
+      expect(template.match(/JEV_VALIDATION_FIELD_MODE:/g)).toHaveLength(1);
+      expect(template).not.toMatch(/jev-validation-field-mode/);
     });
 
     it('takes the audit channel from CircleCI per environment', () => {

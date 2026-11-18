@@ -109,14 +109,14 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedFreightLabel: z.string().nullable().describe('The exact label on the invoice for the freight amount (e.g. "Freight", "Shipping and Handling", "Delivery"). Null if no freight amount was found.'),
 
-  extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
+  extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. The one exception is employer payroll tax: a "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax, so leave it out of this field. Null if no tax amount could be found or if it is ambiguous.'),
 
   extractedTaxLabel: z.string().nullable().describe('The exact label on the invoice for the tax amount (e.g. "Sales Tax", "VAT", "GST"). Null if no tax amount was found.'),
 
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),
-  })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Null when there is none.'),
+  })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount, except a payroll or employer tax row on an invoice that bills payroll cost (that stays a line). Null when there is none.'),
 
   extractedSummaryCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
@@ -148,6 +148,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedSecondReadOutcome: z.enum(['rejected', 'inconclusive', 'not_lines', 'failed', 'skipped']).nullable().optional().describe('Set by code and never by a model: why a missing-row second read did not change the rows ("rejected" when it found no new row, "inconclusive" when it changed or added rows without closing the gap, "not_lines" when the row that closed the gap was labeled like tax, a balance, a payment, or a finance charge). Null when no second read was needed or its rows were used.'),
 
+  bankingInfoPrinted: z.boolean().nullable().optional().describe('Set by code from the document read and never by a model: true when a supplier invoice document prints bank details a payer would use to send money to the supplier. Null when no document read ran.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
@@ -176,7 +178,7 @@ export const InvoiceEnrichmentSchema = z.object({
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.'),
     tableNumber: z.number().int().nullable().describe('Which table on the document this row came from, numbered 1, 2, 3... in document order. Rows from the same table share a number. Use 1 when the document has one line-item table. Null only if you cannot tell which table the row belongs to.'),
     sectionLabel: z.string().nullable().optional().describe('The heading the row is printed under (for example a date and event name such as "Wednesday, November 4, 2026 - Awards Event Enhancements"). It tells apart rows that are otherwise identical. Null when the row has no heading.')
-  })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
+  })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. A "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax, a billed charge: include it as a line. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({
     ...emailCodingFields,
@@ -204,7 +206,18 @@ export const InvoiceEnrichmentSchema = z.object({
 
 });
 
-export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
+type InvoiceEnrichmentSchemaResult = z.infer<typeof InvoiceEnrichmentSchema>;
+
+// The model fills name and workdayId; resolvedName, rejectedDiscountTerm, unverified, and candidateWorkdayId
+// are added in code after matching (see applyPaymentTermsDiscountRule in payment_terms_match.ts).
+export type InvoiceEnrichmentResult = Omit<InvoiceEnrichmentSchemaResult, 'extractedPaymentTerms'> & {
+  extractedPaymentTerms: (NonNullable<InvoiceEnrichmentSchemaResult['extractedPaymentTerms']> & {
+    resolvedName?: string | null;
+    rejectedDiscountTerm?: string | null;
+    unverified?: boolean;
+    candidateWorkdayId?: string | null;
+  }) | null;
+};
 
 // The matching pass sees the OCR JSON, not the documents, and returns only matching, coding, and payment-terms resolution.
 export const InvoiceMatchingSchema = InvoiceEnrichmentSchema.pick({
@@ -336,8 +349,9 @@ Always verify the company (buyer/recipient) assignment:
 
 If the invoice document extraction includes \`extractedPaymentTerms\`:
 
-1. Use the **findPaymentTerms** tool with that name to find the best matching Workday payment terms entry.
-2. Populate \`extractedPaymentTerms\` with the extracted name unchanged and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
+1. Use the **findPaymentTerms** tool with that name to find the best matching Workday payment terms entry. Results come back already ranked: an exact match first, then plain terms (such as "Net 30"), then terms that carry a discount percentage. Take the first result unless it clearly names different terms than the invoice.
+2. Never choose a payment term whose name contains a percentage discount (for example "2% 10 Net 30") unless the extracted payment terms text itself shows a discount percentage. A printed "30 NET" or "Net 30" is plain Net 30, not a discount term. When no plain term fits, set \`workdayId\` to null instead of choosing a discount term.
+3. Populate \`extractedPaymentTerms\` with the extracted name unchanged and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
 
 If the extraction has no payment terms, omit \`extractedPaymentTerms\` entirely.
 
