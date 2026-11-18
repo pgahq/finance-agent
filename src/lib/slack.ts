@@ -243,6 +243,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     dueDateNotApplied?: boolean;
     amountDue?: string;
     amountDueNote?: string;
+    /** A non-USD currency submitted as Currency_Reference; absent for USD and for a fallback to USD. */
+    currency?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     taxAmount?: string;
@@ -259,6 +261,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
   if (extracted?.dueDate) changeLines.push(dueDateChangeLine(extracted.dueDate, extracted.dueDateNotApplied));
   if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}${extracted.amountDueNote ? ` (${extracted.amountDueNote})` : ''}`);
+  if (extracted?.currency) changeLines.push(`*Currency* → ${escapeSlackMrkdwn(extracted.currency)}`);
   if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
   if (extracted?.freightCleared) changeLines.push('*Freight* → none');
   else if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);

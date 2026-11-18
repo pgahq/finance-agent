@@ -4,6 +4,7 @@ import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValid
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import { daysBetween, MAX_DUE_DATE_DAYS_AFTER_INVOICE } from './due_date.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
+import { DEFAULT_INVOICE_CURRENCY, type SupplierCurrencies } from './invoice_currency.js';
 import { applyAmountOnlyLineRetry, applyPositivePoQuantityRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, requiresPositivePoQuantity, splitFreightLines } from './invoice_lines.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
@@ -563,6 +564,8 @@ interface buildSubmitInvoiceDataOptions {
   /** The positive-quantity retry left off PO-linked lines that bill nothing, because they have no amount to send as one unit. */
   zeroAmountPoLinesLeftOff?: boolean;
   currencyWID?: string;
+  /** Why USD is submitted instead of the printed currency; listed as an applied fallback. */
+  currencyFallbackLabel?: string;
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
   omitAssigneeReference?: boolean;
@@ -577,8 +580,8 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'dueDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'shipToAddress' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'dueDate' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'shipToAddress' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'dueDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'shipToAddress' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation' | 'currency';
+type ClassifierFallbackField = Exclude<FallbackField, 'currency' | 'dueDate' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'shipToAddress' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export function intercompanyOmittedLabel(lines: FinalInvoiceLine[] | undefined): string {
   const moved = (lines ?? [])
@@ -991,6 +994,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
 
   if (configuredDefaultSupplierWID && (selectedSupplierWID === configuredDefaultSupplierWID || (!selectedSupplierWID && selectedDefaultSupplierWID))) {
     fallbacks.push({ field: 'supplier', label: 'default supplier' });
+  }
+
+  if (options.currencyFallbackLabel) {
+    fallbacks.push({ field: 'currency', label: options.currencyFallbackLabel });
   }
 
   if (!normalizeInvoiceDate(invoiceDate)) {
@@ -1464,11 +1471,17 @@ function getFallbackRetryBuildOptions(
     && !options.keepSupplier
     && !submitLinksPurchaseOrderLines(options)
   ) {
+    // The default supplier's accepted currencies are never read, so a non-USD currency does not follow the swap.
+    const keepsForeignCurrency = options.currencyWID && options.currencyWID !== DEFAULT_INVOICE_CURRENCY;
     return {
       buildOptions: {
         ...options,
         supplierWID: undefined,
         defaultSupplierWID,
+        ...(keepsForeignCurrency ? {
+          currencyWID: DEFAULT_INVOICE_CURRENCY,
+          currencyFallbackLabel: `fallback currency ${DEFAULT_INVOICE_CURRENCY} instead of ${options.currencyWID} (the default supplier's accepted currencies are not checked)`,
+        } : {}),
       },
       fallbackLabel: 'default supplier',
     };
@@ -2829,6 +2842,8 @@ export async function getWorkQueueTagWIDs(
 export interface SubmitSupplierInvoiceUpdateParams {
   invoiceWorkdayID: string;
   supplierWID?: string;
+  currencyWID?: string;
+  currencyFallbackLabel?: string;
   buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
@@ -2859,6 +2874,8 @@ export async function submitSupplierInvoiceUpdate(
   {
     invoiceWorkdayID,
     supplierWID,
+    currencyWID,
+    currencyFallbackLabel,
     buildNotes,
     memo,
     invoiceDate,
@@ -2934,6 +2951,8 @@ export async function submitSupplierInvoiceUpdate(
       supplierWID,
       companyWID,
       companyReferenceType,
+      ...(currencyWID ? { currencyWID } : {}),
+      ...(currencyFallbackLabel ? { currencyFallbackLabel } : {}),
       workQueueTags,
       memo,
       invoiceDate,
@@ -2980,6 +2999,7 @@ export interface SubmitNewSupplierInvoiceParams {
   companyWID: string;
   companyReferenceType?: string;
   currencyWID?: string;
+  currencyFallbackLabel?: string;
   buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
@@ -3016,6 +3036,7 @@ export async function submitNewSupplierInvoice(
     companyWID,
     companyReferenceType,
     currencyWID,
+    currencyFallbackLabel,
     buildNotes,
     memo,
     invoiceDate,
@@ -3093,6 +3114,7 @@ export async function submitNewSupplierInvoice(
       companyWID,
       companyReferenceType,
       currencyWID,
+      ...(currencyFallbackLabel ? { currencyFallbackLabel } : {}),
       workQueueTags,
       memo,
       invoiceDate,
@@ -3531,6 +3553,59 @@ function parsePurchaseOrderLineStatuses(
     ...(paymentStatus ? { paymentStatus } : {}),
     ...(closeStatus ? { closeStatus } : {}),
   };
+}
+
+function currencyIdsOf(reference: any): string[] {
+  return ([] as any[]).concat(reference?.ID ?? []).flatMap((id: any) => {
+    if (typeof id === 'string') return [id];
+    const type = id?.$attributes?.type;
+    const value = id?.$value;
+    return typeof value === 'string' && value && (!type || type === 'Currency_ID') ? [value] : [];
+  });
+}
+
+/**
+ * The currencies a supplier accepts, from Resource_Management Get_Suppliers by WID:
+ * Supplier_Data.Accepted_Currencies_Reference (repeating) and the supplier's default Currency_Reference, both
+ * Currency_ID references. Get_Suppliers has no field filter, so the whole Supplier_Data comes back.
+ */
+export async function getSupplierAcceptedCurrencies(
+  context: { workdayConfig: WorkdayConfig },
+  supplierWID: string
+): Promise<SupplierCurrencies> {
+  debug(`Fetching accepted currencies for supplier: ${supplierWID}`);
+
+  const client = await buildResourceManagementClient(context);
+
+  const response = await new Promise<any>((resolve, reject) => {
+    const request = {
+      Get_Suppliers_Request: {
+        Request_References: {
+          Supplier_Reference: createReference('WID', supplierWID),
+        },
+        Response_Group: {
+          Include_Reference: true,
+          Include_Attachment_Data: false,
+        },
+      },
+    };
+
+    client.Get_Suppliers(request, (err: any, result: any) => {
+      if (err) {
+        debug('Error from Workday SOAP (Get_Suppliers):', summarizeSoapError(err));
+        return reject(err);
+      }
+      resolve(result);
+    });
+  });
+
+  const suppliers: any[] = ([] as any[]).concat(response?.Response_Data?.Supplier ?? []);
+  const supplierData = suppliers[0]?.Supplier_Data;
+  if (!supplierData) throw new Error('Get_Suppliers returned no Supplier_Data for the supplier');
+
+  const accepted = ([] as any[]).concat(supplierData.Accepted_Currencies_Reference ?? []).flatMap(currencyIdsOf);
+  const [defaultCurrency] = currencyIdsOf(supplierData.Currency_Reference);
+  return { accepted, ...(defaultCurrency ? { default: defaultCurrency } : {}) };
 }
 
 export async function getPurchaseOrder(

@@ -132,8 +132,10 @@ import {
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
+import { detectInvoiceCurrency, formatCurrencyNotes, resolveInvoiceCurrency, type InvoiceCurrencyDecision } from './lib/invoice_currency.js';
 import {
   formatPurchaseOrderLineFallbackNotes,
+  getSupplierAcceptedCurrencies,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
   isPurchaseOrderLineFallback,
@@ -1116,6 +1118,24 @@ async function processInvoiceCluster(
       description: result.supplier.extractedInformation?.memo,
     });
 
+    // A bare "$" names no currency, so only a printed non-USD signal ever reaches Workday's Currency_Reference.
+    const documentCurrency = detectInvoiceCurrency({
+      extractedCurrency: result.extractedCurrency,
+      amountTexts: [result.extractedAmountDue, result.extractedFreightAmount, result.extractedTaxAmount],
+    }).code ?? undefined;
+    let currencyDecision: InvoiceCurrencyDecision | undefined;
+    const decideCurrency = async (supplierWID: string | undefined, existingInvoice: boolean) => {
+      currencyDecision = await resolveInvoiceCurrency({
+        extractedCurrency: result.extractedCurrency,
+        amountTexts: [result.extractedAmountDue, result.extractedFreightAmount, result.extractedTaxAmount],
+        supplierWID,
+        defaultSupplierWID: DEFAULT_SUPPLIER_WID,
+        existingInvoice,
+        lookupSupplierCurrencies: (wid) => getSupplierAcceptedCurrencies(context, wid),
+      });
+      return currencyDecision;
+    };
+
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}, submitSupplierWID=${submitSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
@@ -1229,6 +1249,7 @@ async function processInvoiceCluster(
     const depositPlan = chargeWithheld || freightAsLines
       ? undefined
       : planPartialPayment({
+        currency: documentCurrency,
         partialPayment: result.extractedPartialPayment,
         lineSubtotal: result.extractedLineSubtotal,
         amountDue: extractedAmountDue,
@@ -1305,6 +1326,7 @@ async function processInvoiceCluster(
     const balancePlan = depositPlan || chargeWithheld || freightAsLines
       ? undefined
       : planBalanceInvoice({
+        currency: documentCurrency,
         priorPayments: result.extractedPriorPayments,
         emailBalanceDue: result.emailBalanceDue,
         lineSubtotal: result.extractedLineSubtotal,
@@ -1567,6 +1589,7 @@ async function processInvoiceCluster(
         : {};
     };
     const isDueDateFallback = (f: AppliedFallback) => f.field === 'dueDate';
+    const isCurrencyFallback = (f: AppliedFallback) => f.field === 'currency';
     const isListedInNotes = (f: AppliedFallback) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f) && !isDueDateFallback(f);
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
@@ -1583,6 +1606,7 @@ async function processInvoiceCluster(
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
         + formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber)
+        + formatCurrencyNotes(currencyDecision, appliedFallbacks.some(isCurrencyFallback))
         + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
@@ -1824,11 +1848,16 @@ async function processInvoiceCluster(
           return `${baseNotes(appliedFallbacks)}${formatAmountCheckNotes(amountCheckLines(appliedFallbacks))}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
             formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
+            formatCurrencyNotes(currencyDecision, appliedFallbacks.some(isCurrencyFallback)) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
+        const updateSupplierWID = purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID;
+        const updateCurrency = await decideCurrency(updateSupplierWID, true);
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
-          supplierWID: purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
+          supplierWID: updateSupplierWID,
+          ...(updateCurrency.currencyWID ? { currencyWID: updateCurrency.currencyWID } : {}),
+          ...(updateCurrency.fallbackLabel ? { currencyFallbackLabel: updateCurrency.fallbackLabel } : {}),
           buildNotes: buildUpdateNotes,
           memo,
           invoiceDate: extractedInvoiceDate,
@@ -1883,6 +1912,7 @@ async function processInvoiceCluster(
             suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
             ...(updateOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
             ...(updateOutcome.appliedFallbacks.some(isDueDateFallback) ? { dueDateNotApplied: true } : {}),
+            ...(updateCurrency.currencyWID && updateCurrency.currencyWID !== 'USD' && !updateOutcome.appliedFallbacks.some(isCurrencyFallback) ? { currency: updateCurrency.currencyWID } : {}),
           },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
@@ -1902,10 +1932,13 @@ async function processInvoiceCluster(
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
+    const createCurrency = await decideCurrency(submitSupplierWID, false);
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: submitSupplierWID,
       companyWID,
       companyReferenceType,
+      ...(createCurrency.currencyWID ? { currencyWID: createCurrency.currencyWID } : {}),
+      ...(createCurrency.fallbackLabel ? { currencyFallbackLabel: createCurrency.fallbackLabel } : {}),
       buildNotes: (appliedFallbacks) =>
         buildNotes(appliedFallbacks) +
         (replacedInvoiceLabel ? `\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.` : ''),
@@ -1975,6 +2008,7 @@ async function processInvoiceCluster(
         suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
         ...(createOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
         ...(createOutcome.appliedFallbacks.some(isDueDateFallback) ? { dueDateNotApplied: true } : {}),
+        ...(createCurrency.currencyWID && createCurrency.currencyWID !== 'USD' && !createOutcome.appliedFallbacks.some(isCurrencyFallback) ? { currency: createCurrency.currencyWID } : {}),
       },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,

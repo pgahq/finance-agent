@@ -103,6 +103,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
+  extractedCurrency: z.string().nullable().describe('The ISO 4217 currency code the invoice is billed in (e.g. "EUR", "GBP", "CAD", "USD"). Only when the document clearly shows it: an explicit code or currency name next to the amounts or in the payment instructions, or a symbol that names one currency (€, £) with no dollar context. A bare "$" with no other signal, an ambiguous symbol such as "¥", or signals that disagree return null.'),
+
   extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Prefer letters, digits, hyphen, period, and slash. Do not use pipe |, greater-than, or less-than characters. Null if not visible or unclear.'),
 
   extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping", "handling", or "delivery" charges. Capture this here even if the invoice presents freight/shipping/handling as a line item — do NOT include those lines in extractedInvoiceLines. Null if no freight amount could be found or if it is ambiguous.'),

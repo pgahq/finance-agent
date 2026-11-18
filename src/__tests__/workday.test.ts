@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, ZERO_AMOUNT_PO_LINES_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierAcceptedCurrencies, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, ZERO_AMOUNT_PO_LINES_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -8012,6 +8012,85 @@ describe('Workday utilities', () => {
         .toBe(mockSupplierID);
     });
 
+    describe('invoice currency', () => {
+      const created = (callback: any) => callback(null, {
+        Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] },
+      });
+      const currencyOf = (request: any) =>
+        request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference.ID[0];
+
+      it('submits the resolved currency as a Currency_ID reference without a fallback', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => created(callback));
+
+        const outcome = await submitNewSupplierInvoiceForTest({ currencyWID: 'EUR' });
+
+        expect(currencyOf(mockClient.Submit_Supplier_Invoice.mock.calls[0][0])).toEqual({ $attributes: { type: 'Currency_ID' }, $value: 'EUR' });
+        expect(outcome.appliedFallbacks.some(f => f.field === 'currency')).toBe(false);
+      });
+
+      it('keeps USD when no currency is passed', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => created(callback));
+
+        const outcome = await submitNewSupplierInvoiceForTest();
+
+        expect(currencyOf(mockClient.Submit_Supplier_Invoice.mock.calls[0][0]).$value).toBe('USD');
+        expect(outcome.appliedFallbacks.some(f => f.field === 'currency')).toBe(false);
+      });
+
+      it('lists a currency fallback as applied and submits USD', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => created(callback));
+        const label = 'fallback currency USD instead of EUR (the supplier does not accept EUR)';
+
+        const outcome = await submitNewSupplierInvoiceForTest({ currencyWID: 'USD', currencyFallbackLabel: label });
+
+        expect(currencyOf(mockClient.Submit_Supplier_Invoice.mock.calls[0][0]).$value).toBe('USD');
+        expect(outcome.appliedFallbacks).toContainEqual({ field: 'currency', label });
+      });
+
+      it('falls back to USD when a retry moves the invoice to the default supplier', async () => {
+        const mockClient = mockSoapClient();
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            requests.push(request);
+            callback(Object.assign(new Error('Validation_Fault: supplier is invalid'), {
+              detail: { Validation_Fault: { Validation_Error: { Message: 'Validation_Fault: supplier is invalid' } } },
+            }), null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            requests.push(request);
+            created(callback);
+          });
+
+        const outcome = await submitNewSupplierInvoiceForTest({ currencyWID: 'EUR' });
+
+        expect(requests.map(request => currencyOf(request).$value)).toEqual(['EUR', 'USD']);
+        expect(outcome.appliedFallbacks.map(f => f.field)).toEqual(expect.arrayContaining(['supplier', 'currency']));
+        expect(outcome.appliedFallbacks.find(f => f.field === 'currency')?.label)
+          .toBe("fallback currency USD instead of EUR (the default supplier's accepted currencies are not checked)");
+      });
+
+      it('keeps a USD currency across the default supplier retry without a currency fallback', async () => {
+        const mockClient = mockSoapClient();
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((_request: any, callback: any) => {
+            callback(Object.assign(new Error('Validation_Fault: supplier is invalid'), {
+              detail: { Validation_Fault: { Validation_Error: { Message: 'Validation_Fault: supplier is invalid' } } },
+            }), null);
+          })
+          .mockImplementationOnce((_request: any, callback: any) => created(callback));
+
+        const outcome = await submitNewSupplierInvoiceForTest({ currencyWID: 'USD' });
+
+        expect(outcome.appliedFallbacks.some(f => f.field === 'currency')).toBe(false);
+      });
+    });
+
     describe('PO supplier', () => {
       const supplierNotAllowedForPo = () => new Error(
         'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}'
@@ -9127,6 +9206,93 @@ describe('Workday utilities', () => {
       await annotateSupplierInvoice(mockContext, { invoiceWorkdayID: mockInvoiceWorkdayID });
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-03-15');
+    });
+  });
+
+  describe('getSupplierAcceptedCurrencies', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+    const currency = (id: string) => ({ ID: [{ $attributes: { type: 'Currency_ID' }, $value: id }] });
+
+    const clientReturning = (result: unknown, error: unknown = null) => {
+      const { soap } = require('strong-soap');
+      const mockClient = { setSecurity: jest.fn(), setEndpoint: jest.fn(), Get_Suppliers: jest.fn() };
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      mockClient.Get_Suppliers.mockImplementation((_request: any, callback: any) => callback(error, result));
+      return mockClient;
+    };
+
+    beforeEach(() => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+    });
+
+    it('requests the supplier by WID and reads the accepted and default currencies', async () => {
+      const mockClient = clientReturning({
+        Response_Data: {
+          Supplier: [{
+            Supplier_Data: {
+              Currency_Reference: currency('EUR'),
+              Accepted_Currencies_Reference: [currency('EUR'), currency('GBP')],
+            },
+          }],
+        },
+      });
+
+      const result = await getSupplierAcceptedCurrencies(mockContext, 'supplier-wid-001');
+
+      expect(result).toEqual({ accepted: ['EUR', 'GBP'], default: 'EUR' });
+      expect(mockClient.Get_Suppliers.mock.calls[0][0]).toEqual({
+        Get_Suppliers_Request: {
+          Request_References: {
+            Supplier_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'supplier-wid-001' }] },
+          },
+          Response_Group: { Include_Reference: true, Include_Attachment_Data: false },
+        },
+      });
+    });
+
+    it('normalizes a single accepted currency and ignores IDs of another type', async () => {
+      clientReturning({
+        Response_Data: {
+          Supplier: {
+            Supplier_Data: {
+              Accepted_Currencies_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'wid-123' }, { $attributes: { type: 'Currency_ID' }, $value: 'CAD' }] },
+            },
+          },
+        },
+      });
+
+      await expect(getSupplierAcceptedCurrencies(mockContext, 'supplier-wid-001')).resolves.toEqual({ accepted: ['CAD'] });
+    });
+
+    it('returns an empty list when the supplier names no currencies', async () => {
+      clientReturning({ Response_Data: { Supplier: [{ Supplier_Data: {} }] } });
+
+      await expect(getSupplierAcceptedCurrencies(mockContext, 'supplier-wid-001')).resolves.toEqual({ accepted: [] });
+    });
+
+    it('throws when Workday returns no supplier data, so the caller falls back', async () => {
+      clientReturning({ Response_Data: {} });
+
+      await expect(getSupplierAcceptedCurrencies(mockContext, 'supplier-wid-001')).rejects.toThrow('no Supplier_Data');
+    });
+
+    it('rethrows a SOAP error', async () => {
+      clientReturning(null, new Error('The task submitted is not authorized'));
+
+      await expect(getSupplierAcceptedCurrencies(mockContext, 'supplier-wid-001')).rejects.toThrow('not authorized');
     });
   });
 

@@ -1115,3 +1115,110 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     expect(planBalanceInvoice(printed({ lines: [{ ...supin474922Rows[0], totalPrice: '$183,750.00', unitCost: '$183,750.00' }] }))).toBeUndefined();
   });
 });
+
+describe('non-USD documents (fictional euro figures)', () => {
+  const euroRow = (description: string, amount: string) => ({
+    description, descriptionCells: null, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1, sectionLabel: null,
+  });
+
+  const depositInput = (overrides: Partial<PartialPaymentInput> = {}): PartialPaymentInput => ({
+    currency: 'EUR',
+    partialPayment: { label: 'Deposit Due', percent: '40%', amount: '€4,000.00' },
+    lineSubtotal: { label: 'Total Contract Price', amount: '€10,000.00' },
+    amountDue: '€4,000.00',
+    lines: [euroRow('Hospitality tent rental', '€10,000.00')],
+    poLines: undefined,
+    ...overrides,
+  });
+
+  it('writes the deposit line description, note, and Slack lines with the euro symbol', () => {
+    const plan = planPartialPayment(depositInput())!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.description).toBe('Deposit Due (40% of €10,000.00)');
+    expect(plan.amountDueNote).toBe('40% deposit of €10,000.00');
+    expect(plan.note).toContain('"Deposit Due" €4,000.00 is 40% of €10,000.00');
+    expect(plan.note).toContain('submitted as one €4,000.00 line');
+    expect(plan.slackLines).toEqual(['Deposit Due: €4,000.00 is 40% of €10,000.00. Submitted as one deposit line, not the printed lines.']);
+    expect(plan.note).not.toContain('$');
+  });
+
+  it('keeps the submitted line amount in the plain format the line parsers read', () => {
+    const plan = planPartialPayment(depositInput())!;
+
+    expect(plan.line?.unitCost).toBe('$4,000.00');
+    expect(plan.line?.totalPrice).toBe('$4,000.00');
+  });
+
+  it('names the currency in a deposit that is not applied', () => {
+    const plan = planPartialPayment(depositInput({ partialPayment: { label: 'Deposit Due', percent: '40%', amount: '€3,000.00' }, amountDue: '€3,000.00' }))!;
+
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('40% of €10,000.00 is €4,000.00, not the printed €3,000.00');
+  });
+
+  it('names the currency in the PO line reasons', () => {
+    const plan = planPartialPayment(depositInput({ poLines: [{ lineOrder: 1, description: 'Other', extendedAmount: 7000, availableForInvoicing: true } as any] }))!;
+
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('no PO line is for €4,000.00');
+  });
+
+  it('still shows dollars when no currency is given', () => {
+    const plan = planPartialPayment(depositInput({ currency: undefined }))!;
+
+    expect(plan.line?.description).toBe('Deposit Due (40% of $10,000.00)');
+    expect(plan.note).not.toContain('€');
+  });
+
+  it('writes a balance invoice with the pound symbol', () => {
+    const plan = planBalanceInvoice({
+      currency: 'GBP',
+      priorPayments: [{ label: 'Payments Received', amount: '£6,000.00' }],
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Contract Price', amount: '£10,000.00' },
+      amountDue: '£4,000.00',
+      lines: [euroRow('Staging and lighting', '£10,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.description).toBe('Total Contract Price (balance due of £10,000.00)');
+    expect(plan.amountDueNote).toBe('remaining balance of £10,000.00');
+    expect(plan.note).toContain('£6,000.00 was already paid');
+    expect(plan.note).not.toContain('$');
+  });
+
+  it('writes a pay application with the euro symbol', () => {
+    const applied = planBalanceInvoice({
+      currency: 'EUR',
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '€2,000.00' }],
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '€5,000.00' },
+      amountDue: '€3,000.00',
+      lines: [euroRow('Site works', '€20,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(applied.noteLabel).toBe('Pay application');
+    expect(applied.line?.description).toBe('Pay application - current payment due (Total Completed and Stored to Date €5,000.00)');
+    expect(applied.note).toContain('after "Less Previous Certificates for Payment" €2,000.00');
+    expect(applied.note).not.toContain('$');
+  });
+
+  it('writes a first pay application, which prints no previous payments, with the euro symbol', () => {
+    const first = planBalanceInvoice({
+      currency: 'EUR',
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '€0.00' }],
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '€5,000.00' },
+      amountDue: '€5,000.00',
+      lines: [euroRow('Site works', '€20,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(first.note).toContain('the printed previous payments total €0.00');
+    expect(first.slackLines[0]).toContain('previous payments €0.00');
+    expect(first.note).not.toContain('$');
+  });
+});

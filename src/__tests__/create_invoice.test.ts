@@ -66,6 +66,7 @@ jest.mock('../lib/workday.js', () => ({
   OMITTED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').OMITTED_PO_LINE_REFERENCE_LABEL,
   submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
+  getSupplierAcceptedCurrencies: jest.fn(),
   getSupplierInvoiceEditability: jest.fn(),
 }));
 
@@ -323,6 +324,98 @@ describe('create_invoice', () => {
         assigneeName: 'Joe Carey',
       }),
     );
+  });
+
+  describe('invoice currency (fictional euro invoice)', () => {
+    const euroEnrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '€100.00',
+      extractedCurrency: 'EUR',
+      ...overrides,
+    });
+    const run = async (enrichment: Record<string, unknown>, accepted?: unknown) => {
+      const mocks = freshRequire();
+      mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment);
+      if (accepted instanceof Error) mocks.workday.getSupplierAcceptedCurrencies.mockRejectedValue(accepted);
+      else mocks.workday.getSupplierAcceptedCurrencies.mockResolvedValue(accepted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+      return { ...mocks, submitArgs: mocks.workday.submitNewSupplierInvoice.mock.calls[0][1] };
+    };
+
+    it('sends the printed currency when the supplier accepts it, and says so in the note and Slack', async () => {
+      const { workday, slack, submitArgs } = await run(euroEnrichment(), { accepted: ['USD', 'EUR'] });
+
+      expect(workday.getSupplierAcceptedCurrencies).toHaveBeenCalledWith(expect.anything(), 'supplier-wid-1');
+      expect(submitArgs.currencyWID).toBe('EUR');
+      expect(submitArgs.currencyFallbackLabel).toBeUndefined();
+      expect(submitArgs.buildNotes([])).toContain('Currency: EUR, as printed on the document. The supplier accepts it.');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.currency).toBe('EUR');
+    });
+
+    it('does not claim the currency when the submit retry fell back to USD', async () => {
+      const { slack, submitArgs } = await run(euroEnrichment(), { accepted: ['EUR'] });
+      const label = "fallback currency USD instead of EUR (the default supplier's accepted currencies are not checked)";
+
+      const notes = submitArgs.buildNotes([{ field: 'currency', label }]);
+
+      expect(notes).not.toContain('The supplier accepts it');
+      expect(notes).toContain(`Fallback values applied: ${label}`);
+      expect(slack.notifyResult).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to USD and lists the fallback when the supplier does not accept the currency', async () => {
+      const { submitArgs } = await run(euroEnrichment(), { accepted: ['USD'] });
+      const label = 'fallback currency USD instead of EUR (the supplier does not accept EUR)';
+
+      expect(submitArgs.currencyWID).toBe('USD');
+      expect(submitArgs.currencyFallbackLabel).toBe(label);
+      expect(submitArgs.buildNotes([{ field: 'currency', label }])).toContain(`Fallback values applied: ${label}`);
+    });
+
+    it('never stops the invoice when the accepted currencies cannot be read', async () => {
+      const { workday, submitArgs } = await run(euroEnrichment(), new Error('The task submitted is not authorized'));
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(submitArgs.currencyWID).toBe('USD');
+      expect(submitArgs.currencyFallbackLabel).toContain('could not be read from Workday');
+    });
+
+    it('does not check the default supplier, so an invoice with no matched supplier falls back to USD', async () => {
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { workday, submitArgs } = await run(euroEnrichment({
+        supplier: { ...baseEnrichmentResult.supplier, status: 'not_found', resolvedSupplier: null },
+      }), { accepted: ['EUR'] });
+
+      expect(workday.getSupplierAcceptedCurrencies).not.toHaveBeenCalled();
+      expect(submitArgs.supplierWID).toBe('default-supplier-wid');
+      expect(submitArgs.currencyWID).toBe('USD');
+      expect(submitArgs.currencyFallbackLabel).toContain('the default supplier is used');
+    });
+
+    it('sends no currency and looks nothing up for a plain dollar invoice', async () => {
+      const { workday, submitArgs, slack } = await run({ ...baseEnrichmentResult, extractedCurrency: null }, { accepted: [] });
+
+      expect(workday.getSupplierAcceptedCurrencies).not.toHaveBeenCalled();
+      expect(submitArgs).not.toHaveProperty('currencyWID');
+      expect(submitArgs).not.toHaveProperty('currencyFallbackLabel');
+      expect(submitArgs.buildNotes([])).not.toContain('Currency');
+      expect(slack.notifyResult.mock.calls[0][3].extracted).not.toHaveProperty('currency');
+    });
+
+    it('reads the currency from the printed amount when the model returned none', async () => {
+      const { submitArgs } = await run(euroEnrichment({ extractedCurrency: null }), { accepted: ['EUR'] });
+
+      expect(submitArgs.currencyWID).toBe('EUR');
+    });
+
+    it('falls back to USD when the printed signals disagree', async () => {
+      const { workday, submitArgs } = await run(euroEnrichment({ extractedAmountDue: '$100.00' }), { accepted: ['EUR'] });
+
+      expect(workday.getSupplierAcceptedCurrencies).not.toHaveBeenCalled();
+      expect(submitArgs.currencyWID).toBe('USD');
+      expect(submitArgs.currencyFallbackLabel).toContain('signals disagree');
+    });
   });
 
   describe('expense reimbursement packet', () => {
