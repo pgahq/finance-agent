@@ -8,7 +8,7 @@ import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines
 import { attachmentContentParts, convertOfficeAttachmentsForModel } from './invoice_ocr.js';
 import { supplierNamesMatch } from './po_supplier.js';
 import { findUniqueSupplierByNameEvidence } from './supplier_match.js';
-import { resolveSupplierIdFromText, resolveSupplierIdHints } from './supplier_note_hints.js';
+import { extractSupplierNoteHints, resolveSupplierIdFromText, resolveSupplierIdHints } from './supplier_note_hints.js';
 import type { InvoiceData, PresignedAttachment } from './types.js';
 import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { normalizePrintedDate, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
@@ -648,10 +648,14 @@ async function resolvePayee(
     // Only one of the two reads found this ID. Before this fix that stopped the packet outright; now a cheaper
     // guard: if AP (or the supplier) separately named a different Supplier ID for this payee in the Intercom
     // conversation, that is a real conflict the one-read ID must not silently win — stop instead of guessing.
+    // Dropping this ID from the extracted list first means a thread that names both the original ID and a
+    // correction is not `ambiguous` (resolveSupplierIdFromText guesses between none), it is this exact conflict.
     if (packet.payeeSupplierIdFromOneRead) {
-      const noteLookup = await resolveSupplierIdFromText(db, emailContext?.plainTextBody, nameOnForm);
-      if (noteLookup.outcome === 'resolved' && noteLookup.supplierId !== supplierId) {
-        return { failure: `Supplier ID ${supplierId}, found by only one of the two packet reads, conflicts with Supplier ID ${noteLookup.supplierId} named in the Intercom conversation` };
+      const otherIds = extractSupplierNoteHints(emailContext?.plainTextBody).supplierIds.filter((id) => id !== supplierId);
+      const conflict = (await resolveSupplierIdHints(db, otherIds))
+        .find((other) => other.supplierName && supplierNamesMatch(nameOnForm, other.supplierName));
+      if (conflict) {
+        return { failure: `Supplier ID ${supplierId}, found by only one of the two packet reads, conflicts with Supplier ID ${conflict.supplierId} named in the Intercom conversation` };
       }
     }
     const [hint] = await resolveSupplierIdHints(db, [supplierId]);

@@ -377,11 +377,26 @@ describe('a Supplier ID only one read found', () => {
   });
 
   it('stops when a different Supplier ID for the same payee is named in the conversation, rather than trusting the one-read ID', async () => {
-    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: { supplierId: 'S-000999', supplierName: 'MORGAN T ELLERY' } }]);
     reads({ payeeSupplierId: null }, { payeeSupplierId: 'S-000123' });
     const result = await read();
     const decision = await decideReimbursement(db as never, result, {
       emailContext: { plainTextBody: 'AP note: actually this is Supplier ID S-000999.' } as never,
+    });
+    expect(decision).toMatchObject({
+      outcome: 'manual_entry',
+      manual: { reason: 'Supplier ID S-000123, found by only one of the two packet reads, conflicts with Supplier ID S-000999 named in the Intercom conversation' },
+    });
+  });
+
+  it('still catches the conflict when the thread names both the one-read ID and the correction', async () => {
+    // Naming both IDs in one thread would make resolveSupplierIdFromText return 'ambiguous' (it never guesses
+    // between two IDs), so the guard must drop the one-read ID from the extracted list before looking the rest up,
+    // not rely on resolveSupplierIdFromText's single-ID path.
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: { supplierId: 'S-000999', supplierName: 'MORGAN T ELLERY' } }]);
+    reads({ payeeSupplierId: null }, { payeeSupplierId: 'S-000123' });
+    const decision = await decideReimbursement(db as never, await read(), {
+      emailContext: { plainTextBody: 'Please pay Supplier ID S-000123.\nAP note: wrong ID, use Supplier ID S-000999.' } as never,
     });
     expect(decision).toMatchObject({
       outcome: 'manual_entry',
