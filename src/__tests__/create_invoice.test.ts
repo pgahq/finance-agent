@@ -465,6 +465,39 @@ describe('create_invoice', () => {
         expect(notes).toContain('when they name different coding, the email text and AP notes win');
       });
 
+      it('resolves a company the form names without a code, and tags it as coming from the form', async () => {
+        const mocks = freshRequire();
+        mocks.reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+        mocks.reimbursementPacket.decideReimbursement.mockResolvedValue({
+          outcome: 'apply',
+          reimbursement: { ...formReimbursement, formCoding: { codingValue: 'Sample Company Alpha', costCenter: null, lineOfBusiness: null, spendCategory: null } },
+        });
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...payeeEnrichment,
+          emailWorktags: { company: { extracted: 'Sample Company Alpha', name: 'Sample Company Alpha', workdayId: 'wid-company-alpha', referenceId: null } },
+        });
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+          lines: [{ lineOrder: 1, description: reimbursement.description, extendedAmount: 1000 }],
+          appliedFallbacks: defaultFinalLines.appliedFallbacks,
+        });
+        await mocks.processor({ data: [request('Please reimburse Morgan for the hotel.')] } as any);
+        const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.companyWID).toBe('wid-company-alpha');
+        const notes = submitArgs.buildNotes([]) as string;
+        expect(notes).toContain("Company applied from the reimbursement form's coding: Sample Company Alpha.");
+        expect(notes).not.toContain('Company applied from email coding');
+      });
+
+      it('never takes a company the cache finds for a code other than the one the model claimed', async () => {
+        const { submitArgs, notes } = await run(
+          request('Please reimburse Morgan for the hotel.'),
+          '999',
+          new Map([['410', [company('410', 'wid-company-410')]]])
+        );
+        expect(submitArgs.companyWID).not.toBe('wid-company-410');
+        expect(notes).toContain('so the default coding was applied and none of this coding was used.');
+      });
+
       it('does not trust a company the model claimed from the form when the company cache does not confirm it', async () => {
         const { submitArgs, notes } = await run(request('Please reimburse Morgan for the hotel.'), '410', new Map());
         expect(submitArgs.companyWID).not.toBe('wid-company-410');

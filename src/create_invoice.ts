@@ -125,6 +125,7 @@ import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './
 import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
+  type EmailCompanyMatch,
 } from './lib/reference_ids.js';
 import {
   claimInvoiceCluster,
@@ -1047,8 +1048,16 @@ async function processInvoiceCluster(
       emailCompany: result.emailWorktags?.company,
     });
     const emailNamedCompany = await resolveEmailCompany();
-    const formNamedCompany = !emailNamedCompany && reimbursementCodingLineText
+    const formResolvedCompany = !emailNamedCompany && reimbursementCodingLineText
       ? await resolveEmailCompany(reimbursementCodingLineText)
+      : undefined;
+    // The form's coding value is untyped, so a company it resolves to must be the one the matching model claimed from
+    // it; a company the cache happens to find for some other code on the line is never taken.
+    const claimedCompany = result.emailWorktags?.company;
+    const formNamedCompany: EmailCompanyMatch | undefined = formResolvedCompany
+      && ((formResolvedCompany.workdayId && formResolvedCompany.workdayId === claimedCompany?.workdayId)
+        || (formResolvedCompany.referenceId && formResolvedCompany.referenceId === claimedCompany?.referenceId))
+      ? { ...formResolvedCompany, origin: 'form' }
       : undefined;
     const emailCompany = emailNamedCompany ?? formNamedCompany;
 
