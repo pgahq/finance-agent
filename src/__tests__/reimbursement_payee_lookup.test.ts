@@ -46,6 +46,7 @@ const packet = (payeeName: string | null): ReimbursementPacket => ({
   formDate: '11/02/2026',
   expenseKind: 'hotel',
   purpose: 'Sample Marathon Team',
+  formCoding: null,
   evidence: ['Amount to Pay $1,000.00'],
 });
 

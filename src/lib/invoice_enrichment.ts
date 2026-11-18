@@ -367,7 +367,7 @@ export function formatCompanyNotes(
 export interface EmailCompanyReview {
   appliedName?: string;
   referenceId?: string;
-  origin?: 'code' | 'name';
+  origin?: 'code' | 'name' | 'form';
   conflictWith?: 'po' | 'bill_to';
   /** Name of the PO company or bill-to company the email company replaced. */
   conflictName?: string;
@@ -378,7 +378,9 @@ export function describeEmailCompanyReview(review: EmailCompanyReview): { note: 
   const name = review.appliedName ?? review.referenceId ?? 'the email company';
   const source = review.origin === 'name'
     ? 'the company named in the email'
-    : `email coding${review.referenceId ? ` (code ${review.referenceId})` : ''}`;
+    : review.origin === 'form'
+      ? `the reimbursement form's coding${review.referenceId ? ` (code ${review.referenceId})` : ''}`
+      : `email coding${review.referenceId ? ` (code ${review.referenceId})` : ''}`;
   const note = `Company applied from ${source}: ${name}.`;
   if (!review.conflictWith) return { note };
   const other = review.conflictWith === 'po'
@@ -386,7 +388,7 @@ export function describeEmailCompanyReview(review: EmailCompanyReview): { note: 
     : `the invoice bill-to company${review.conflictName ? ` (${review.conflictName})` : ''}`;
   return {
     note: `${note} This differs from ${other}; verify the company before approving.`,
-    review: `Company ${name} ${review.origin === 'name' ? 'was named in the email' : `came from email coding${review.referenceId ? ` ${review.referenceId}` : ''}`} but differs from ${other}; verify.`,
+    review: `Company ${name} ${review.origin === 'name' ? 'was named in the email' : review.origin === 'form' ? `came from the reimbursement form's coding${review.referenceId ? ` ${review.referenceId}` : ''}` : `came from email coding${review.referenceId ? ` ${review.referenceId}` : ''}`} but differs from ${other}; verify.`,
   };
 }
 

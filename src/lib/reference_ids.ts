@@ -40,7 +40,8 @@ const MIN_TOP_MATCH_MARGIN = 0.05;
 export const MAX_INEXACT_REFERENCE_LOOKUPS = 4;
 
 /** `code`: an explicit company code in the email. `name`: a company the email names without a code. */
-export type EmailCompanyOrigin = 'code' | 'name';
+/** `form` is a company the coding line of a reimbursement form named when the email and AP notes named none. */
+export type EmailCompanyOrigin = 'code' | 'name' | 'form';
 
 export interface EmailCompanyMatch {
   workdayId?: string;

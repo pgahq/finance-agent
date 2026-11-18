@@ -386,6 +386,7 @@ describe('create_invoice', () => {
         keepSupplier: true,
       });
       expect(submitArgs.suppliersInvoiceNumber).toMatch(/^MORG/);
+      expect(submitArgs.memo).toBe('hotel reimbursement - 2026 Sample Marathon Team');
       const notes = submitArgs.buildNotes([]);
       expect(notes).toContain('The merchant on receipts or folios was not used as the supplier.');
       expect(notes).toContain('Reimbursement packet: invoiced to S-000123 MORGAN T ELLERY for $1,000.00, the Amount to Pay on the reimbursement form.');
@@ -399,6 +400,142 @@ describe('create_invoice', () => {
           reimbursement: expect.arrayContaining([expect.stringContaining('Payee: MORGAN T ELLERY (S-000123)')]),
         }),
       );
+    });
+
+    describe('the coding the form prints', () => {
+      const formReimbursement = {
+        ...reimbursement,
+        formCoding: { codingValue: '410', costCenter: 'Sample Programs', lineOfBusiness: 'SPR', spendCategory: null },
+      };
+      const company = (referenceId: string, workdayId: string) => ({
+        workday_id: workdayId,
+        type: 'company',
+        content: `Sample Company ${referenceId}`,
+        metadata: { companyReferenceId: referenceId, companyName: `Sample Company ${referenceId}` },
+      });
+      const request = (plainTextBody: string, adminConversationParts?: string) => ({
+        ...attachmentRequest('new-invoices/req-form-coding/packet.pdf', 'packet.pdf'),
+        emailContext: { subject: 'Hotel reimbursement for Morgan Ellery', plainTextBody, ...(adminConversationParts ? { adminConversationParts } : {}) },
+      });
+      const run = async (email: ReturnType<typeof request>, claimed: string, cache: Map<string, unknown[]>) => {
+        const mocks = freshRequire();
+        const { findDocumentsByReferenceIds } = require('../lib/database.js');
+        findDocumentsByReferenceIds.mockImplementation((_db: unknown, codes: string[]) =>
+          Promise.resolve(new Map(codes.map((code) => [code, cache.get(code) ?? []]))));
+        mocks.reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+        mocks.reimbursementPacket.decideReimbursement.mockResolvedValue({ outcome: 'apply', reimbursement: formReimbursement });
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...payeeEnrichment,
+          emailWorktags: {
+            company: { extracted: claimed, name: `Sample Company ${claimed}`, workdayId: `wid-company-${claimed}`, referenceId: claimed },
+            costCenter: { extracted: 'Sample Programs', name: 'Sample Programs', code: '72200' },
+          },
+        });
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+          lines: [{ lineOrder: 1, description: reimbursement.description, extendedAmount: 1000 }],
+          appliedFallbacks: defaultFinalLines.appliedFallbacks,
+        });
+        await mocks.processor({ data: [email] } as any);
+        const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+        return { ...mocks, submitArgs, notes: submitArgs.buildNotes([]) as string, lookups: findDocumentsByReferenceIds.mock.calls };
+      };
+
+      it('submits the company the form codes when the email names none, and says so in the note', async () => {
+        const { submitArgs, notes, invoiceLines, slack } = await run(
+          request('Please reimburse Morgan for the hotel.'),
+          '410',
+          new Map([['410', [company('410', 'wid-company-410')]]])
+        );
+        expect(submitArgs.companyWID).toBe('wid-company-410');
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({ costCenterId: '72200' }));
+        expect(notes).toContain('Reimbursement form coding: the form prints (whitespace and quote marks normalized) coding "410", cost center "Sample Programs", LOB "SPR".');
+        expect(notes).toContain("The company came from the form's coding.");
+        expect(notes).not.toContain('none of this coding was used');
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice',
+          'success',
+          expect.any(Number),
+          expect.objectContaining({
+            company: expect.objectContaining({ appliedFrom: 'email', emailOrigin: 'form', appliedReferenceId: '410' }),
+          }),
+        );
+      });
+
+      it('lets a company in the AP notes win over the form company', async () => {
+        const { submitArgs, notes, lookups } = await run(
+          request('Please reimburse Morgan for the hotel.', '<p>Coding: company 912</p>'),
+          '912',
+          new Map([['410', [company('410', 'wid-company-410')]], ['912', [company('912', 'wid-company-912')]]])
+        );
+        expect(submitArgs.companyWID).toBe('wid-company-912');
+        expect(lookups.flatMap((call: unknown[]) => call[1])).not.toContain('410');
+        expect(notes).not.toContain("The company came from the form's coding.");
+        expect(notes).toContain("The company did not come from the form's coding.");
+        expect(notes).toContain('when they name different coding, the email text and AP notes win');
+      });
+
+      it('resolves a company the form names without a code, and tags it as coming from the form', async () => {
+        const mocks = freshRequire();
+        mocks.reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+        mocks.reimbursementPacket.decideReimbursement.mockResolvedValue({
+          outcome: 'apply',
+          reimbursement: { ...formReimbursement, formCoding: { codingValue: 'Sample Company Alpha', costCenter: null, lineOfBusiness: null, spendCategory: null } },
+        });
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...payeeEnrichment,
+          emailWorktags: { company: { extracted: 'Sample Company Alpha', name: 'Sample Company Alpha', workdayId: 'wid-company-alpha', referenceId: null } },
+        });
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+          lines: [{ lineOrder: 1, description: reimbursement.description, extendedAmount: 1000 }],
+          appliedFallbacks: defaultFinalLines.appliedFallbacks,
+        });
+        await mocks.processor({ data: [request('Please reimburse Morgan for the hotel.')] } as any);
+        const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.companyWID).toBe('wid-company-alpha');
+        const notes = submitArgs.buildNotes([]) as string;
+        expect(notes).toContain("Company applied from the reimbursement form's coding: Sample Company Alpha.");
+        expect(notes).not.toContain('Company applied from email coding');
+      });
+
+      it('looks up no form company when the form prints only a cost center, LOB, or spend category', async () => {
+        const mocks = freshRequire();
+        const { findDocumentsByReferenceIds } = require('../lib/database.js');
+        findDocumentsByReferenceIds.mockImplementation((_db: unknown, codes: string[]) =>
+          Promise.resolve(new Map(codes.map((code) => [code, code === '72200' ? [company('72200', 'wid-company-72200')] : []]))));
+        mocks.reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+        mocks.reimbursementPacket.decideReimbursement.mockResolvedValue({
+          outcome: 'apply',
+          reimbursement: { ...formReimbursement, formCoding: { codingValue: null, costCenter: '72200', lineOfBusiness: null, spendCategory: null } },
+        });
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...payeeEnrichment,
+          emailWorktags: { company: { extracted: '72200', name: 'Sample Company 72200', workdayId: 'wid-company-72200', referenceId: '72200' } },
+        });
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+          lines: [{ lineOrder: 1, description: reimbursement.description, extendedAmount: 1000 }],
+          appliedFallbacks: defaultFinalLines.appliedFallbacks,
+        });
+        await mocks.processor({ data: [request('Please reimburse Morgan for the hotel.')] } as any);
+        const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.companyWID).not.toBe('wid-company-72200');
+        expect(findDocumentsByReferenceIds.mock.calls.flatMap((call: unknown[]) => call[1])).not.toContain('72200');
+      });
+
+      it('never takes a company the cache finds for a code other than the one the model claimed', async () => {
+        const { submitArgs, notes } = await run(
+          request('Please reimburse Morgan for the hotel.'),
+          '999',
+          new Map([['410', [company('410', 'wid-company-410')]]])
+        );
+        expect(submitArgs.companyWID).not.toBe('wid-company-410');
+        expect(notes).toContain('so the default coding was applied and none of this coding was used.');
+      });
+
+      it('does not trust a company the model claimed from the form when the company cache does not confirm it', async () => {
+        const { submitArgs, notes } = await run(request('Please reimburse Morgan for the hotel.'), '410', new Map());
+        expect(submitArgs.companyWID).not.toBe('wid-company-410');
+        expect(notes).toContain('so the default coding was applied and none of this coding was used.');
+      });
     });
 
     it('creates nothing and posts a manual-entry stop when the payee or amount is not confident', async () => {
