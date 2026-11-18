@@ -24,11 +24,13 @@ describe('normalizeCurrencyCode', () => {
     ['US$', 'USD'],
     ['US Dollars', 'USD'],
     ['Swiss Francs', 'CHF'],
+    ['Dollars', 'USD'],
+    ['USD$', 'USD'],
   ])('reads %p as %p', (printed, code) => {
     expect(normalizeCurrencyCode(printed)).toBe(code);
   });
 
-  it.each(['', '   ', null, undefined, '$', '¥', 'dollars', 'N/A', 'EURO ZONE'])('names no currency for %p', (printed) => {
+  it.each(['', '   ', null, undefined, '$', '¥', 'N/A', 'EURO ZONE', 'TBD', 'NET', 'NaN', 'XYZ'])('names no currency for %p', (printed) => {
     expect(normalizeCurrencyCode(printed)).toBeNull();
   });
 });
@@ -71,6 +73,19 @@ describe('detectInvoiceCurrency', () => {
   it('is ambiguous for a symbol or answer that names several currencies', () => {
     expect(detect(null, '¥8,573')).toEqual({ status: 'ambiguous', code: null });
     expect(detect('Rubles', '8,573.40')).toEqual({ status: 'ambiguous', code: null });
+  });
+
+  it.each(['TBD', 'NaN', 'N/A', 'none', 'null'])('treats the placeholder answer %p as no currency, not as an unreadable one', (answer) => {
+    expect(detect(answer, '$8,573.40')).toEqual({ status: 'none', code: null });
+  });
+
+  it.each(['NET', 'XYZ', 'EURO ZONE'])('treats the unknown answer %p as ambiguous, never as a code', (answer) => {
+    expect(detect(answer, '$8,573.40')).toEqual({ status: 'ambiguous', code: null });
+  });
+
+  it('reads Dollars and USD$ as USD on a plain dollar invoice', () => {
+    expect(detect('Dollars', '$8,573.40')).toEqual({ status: 'detected', code: 'USD' });
+    expect(detect('USD$', '$8,573.40')).toEqual({ status: 'detected', code: 'USD' });
   });
 
   it('does not read a code out of an ordinary word', () => {
@@ -162,6 +177,28 @@ describe('resolveInvoiceCurrency', () => {
     await expect(resolve({ extractedCurrency: null, amountTexts: ['¥1,200'] })).resolves.toEqual({
       currencyWID: 'USD',
       fallbackLabel: "fallback currency USD (the document's currency could not be determined)",
+    });
+  });
+
+  describe('comma-decimal amounts', () => {
+    it.each(['€8.573,40', 'EUR 8573,40', '8.573,4 EUR'])('does not verify a non-USD currency when %p is printed, because the amount parser misreads it', async (amount) => {
+      const lookup = accepts({ accepted: ['EUR'] });
+      const decision = await resolve({ amountTexts: [amount], lookupSupplierCurrencies: lookup });
+
+      expect(decision.currencyWID).toBe('USD');
+      expect(decision.fallbackLabel).toBe('fallback currency USD instead of EUR (an amount is printed with a comma as the decimal separator, which the amount parser does not read correctly, so check every amount)');
+      expect(lookup).not.toHaveBeenCalled();
+    });
+
+    it.each(['€8,573.40', '€8,573', 'EUR 1,234,567.89'])('still verifies a euro invoice printed with a dot decimal: %p', async (amount) => {
+      await expect(resolve({ amountTexts: [amount] })).resolves.toEqual({ documentCurrency: 'EUR', currencyWID: 'EUR' });
+    });
+
+    it('leaves a review note and the Workday currency on an existing invoice', async () => {
+      const decision = await resolve({ existingInvoice: true, amountTexts: ['€8.573,40'] });
+
+      expect(decision.currencyWID).toBeUndefined();
+      expect(decision.reviewNote).toContain('comma as the decimal separator');
     });
   });
 

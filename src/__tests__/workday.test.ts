@@ -881,6 +881,87 @@ describe('Workday utilities', () => {
       ]);
     });
 
+    describe('invoice currency on an existing invoice', () => {
+      const setup = (existingCurrency: string) => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Supplier_Invoice: {
+                Supplier_Invoice_Data: {
+                  Invoice_Number: '12345',
+                  Company_Reference: { ID: 'company-wid' },
+                  Currency_Reference: { ID: existingCurrency },
+                  Invoice_Date: '2024-01-01',
+                  Control_Amount_Total: '100.00'
+                }
+              }
+            }
+          });
+        });
+        return mockClient;
+      };
+      const fault = (message: string) => ({
+        Validation_Fault: { Validation_Error: { Message: message } }
+      });
+      const dataOf = (request: any) => request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+
+      it('keeps the currency Workday holds when a retry moves the update to the default supplier', async () => {
+        const mockClient = setup('GBP');
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            callback(fault('Validation_Fault: supplier is invalid'), null);
+            return;
+          }
+          callback(null, {});
+        });
+
+        const result = await submitSupplierInvoiceUpdateForTest({ currencyWID: 'EUR' });
+
+        expect(dataOf(requests[0]).Currency_Reference).toEqual({ ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'EUR' }] });
+        expect(dataOf(requests[1]).Currency_Reference).toEqual({ ID: 'GBP' });
+        expect(result.appliedFallbacks.find(f => f.field === 'currency')?.label)
+          .toBe("currency left as Workday had it instead of EUR (the default supplier's accepted currencies are not checked)");
+      });
+
+      it('retries a currency fault on an update without the currency, keeping what Workday holds', async () => {
+        const mockClient = setup('GBP');
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            callback(fault('The currency EUR is not allowed for this company.'), null);
+            return;
+          }
+          callback(null, {});
+        });
+
+        const result = await submitSupplierInvoiceUpdateForTest({ currencyWID: 'EUR' });
+
+        expect(requests).toHaveLength(2);
+        expect(dataOf(requests[1]).Currency_Reference).toEqual({ ID: 'GBP' });
+        expect(result.appliedFallbacks).toContainEqual({
+          field: 'currency',
+          label: 'currency left as Workday had it instead of EUR (Workday rejected it)',
+          dueToValidationError: true,
+        });
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+    });
+
     it('should retry invoice date validation faults with the default invoice date', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
 
@@ -8072,6 +8153,41 @@ describe('Workday utilities', () => {
         expect(outcome.appliedFallbacks.map(f => f.field)).toEqual(expect.arrayContaining(['supplier', 'currency']));
         expect(outcome.appliedFallbacks.find(f => f.field === 'currency')?.label)
           .toBe("fallback currency USD instead of EUR (the default supplier's accepted currencies are not checked)");
+      });
+
+      it('retries a currency fault with USD and lists the fallback, without asking the classifier', async () => {
+        const mockClient = mockSoapClient();
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            requests.push(request);
+            callback({ Validation_Fault: { Validation_Error: { Message: 'No exchange rate is defined for EUR on the invoice date.' } } }, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            requests.push(request);
+            created(callback);
+          });
+
+        const outcome = await submitNewSupplierInvoiceForTest({ currencyWID: 'EUR' });
+
+        expect(requests.map(request => currencyOf(request).$value)).toEqual(['EUR', 'USD']);
+        expect(outcome.appliedFallbacks).toContainEqual({
+          field: 'currency',
+          label: 'fallback currency USD instead of EUR (Workday rejected it)',
+          dueToValidationError: true,
+        });
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
+      it('does not treat a currency fault as retryable when the currency sent was already USD', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback({ Validation_Fault: { Validation_Error: { Message: 'The currency is not allowed for this company.' } } }, null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest({ currencyWID: 'USD' })).rejects.toBeDefined();
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
       });
 
       it('keeps a USD currency across the default supplier retry without a currency fallback', async () => {

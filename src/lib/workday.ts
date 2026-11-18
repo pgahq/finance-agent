@@ -1319,6 +1319,13 @@ async function getValidationFallbackField(
     return undefined;
   }
 
+  // The fault names the currency, so the classifier has no field for it. Only a non-USD currency the agent sent
+  // can be retried; a currency fallback already applied falls through to the repeat-fault stop.
+  if (hasForeignCurrency(options) && isCurrencyValidationError(validationText)) {
+    debug('Validation names the currency; retrying without the printed currency', { currencyWID: options.currencyWID });
+    return 'currency';
+  }
+
   if (options.assigneeWID && isAssigneeValidationError(validationText)) {
     debug('Validation references assignee; retrying without Assignee_Reference');
     return 'assignee';
@@ -1455,6 +1462,35 @@ async function getValidationFallbackField(
   }
 }
 
+function hasForeignCurrency(options: buildSubmitInvoiceDataOptions): boolean {
+  return Boolean(options.currencyWID) && options.currencyWID !== DEFAULT_INVOICE_CURRENCY;
+}
+
+/**
+ * Drops a non-USD currency from a retry. A new invoice is created in USD; an existing invoice, which already holds a
+ * Currency_Reference that buildSubmitInvoiceData reads back, keeps it, so an update never overwrites it with USD.
+ */
+function getCurrencyResetOptions(
+  options: buildSubmitInvoiceDataOptions,
+  reason: string
+): Pick<buildSubmitInvoiceDataOptions, 'currencyWID' | 'currencyFallbackLabel'> {
+  if (!hasForeignCurrency(options)) return {};
+  if (options.currentInvoice?.Currency_Reference) {
+    return {
+      currencyWID: undefined,
+      currencyFallbackLabel: `currency left as Workday had it instead of ${options.currencyWID} (${reason})`,
+    };
+  }
+  return {
+    currencyWID: DEFAULT_INVOICE_CURRENCY,
+    currencyFallbackLabel: `fallback currency ${DEFAULT_INVOICE_CURRENCY} instead of ${options.currencyWID} (${reason})`,
+  };
+}
+
+function isCurrencyValidationError(validationText: string): boolean {
+  return /\bcurrenc(?:y|ies)\b|Currency_(?:Reference|ID)|exchange\s+rate/i.test(validationText);
+}
+
 function getFallbackRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions,
   field: FallbackField,
@@ -1472,18 +1508,22 @@ function getFallbackRetryBuildOptions(
     && !submitLinksPurchaseOrderLines(options)
   ) {
     // The default supplier's accepted currencies are never read, so a non-USD currency does not follow the swap.
-    const keepsForeignCurrency = options.currencyWID && options.currencyWID !== DEFAULT_INVOICE_CURRENCY;
+    const currencyReset = getCurrencyResetOptions(options, "the default supplier's accepted currencies are not checked");
     return {
       buildOptions: {
         ...options,
         supplierWID: undefined,
         defaultSupplierWID,
-        ...(keepsForeignCurrency ? {
-          currencyWID: DEFAULT_INVOICE_CURRENCY,
-          currencyFallbackLabel: `fallback currency ${DEFAULT_INVOICE_CURRENCY} instead of ${options.currencyWID} (the default supplier's accepted currencies are not checked)`,
-        } : {}),
+        ...currencyReset,
       },
       fallbackLabel: 'default supplier',
+    };
+  }
+
+  if (field === 'currency' && hasForeignCurrency(options)) {
+    return {
+      buildOptions: { ...options, ...getCurrencyResetOptions(options, 'Workday rejected it') },
+      fallbackLabel: 'default currency',
     };
   }
 

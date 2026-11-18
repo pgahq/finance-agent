@@ -16,8 +16,13 @@ const SYMBOLS: Record<string, string> = {
 // Currencies whose printed amounts can legitimately carry a bare "$".
 const DOLLAR_CODES = new Set(['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'MXN']);
 
+const ISO_CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
+
+// Answers that mean the reader found no currency; they are not a signal and not an unreadable one.
+const NO_CURRENCY_ANSWERS = new Set(['none', 'null', 'nan', 'n/a', 'na', 'tbd', 'unknown', 'not printed', 'not stated', 'not specified']);
+
 const CURRENCY_NAMES: Array<[RegExp, string]> = [
-  [/^(?:us|u\.s\.|united states)\s+dollars?$/i, 'USD'],
+  [/^(?:(?:us|u\.s\.|united states)\s+)?dollars?$/i, 'USD'],
   [/^euros?$/i, 'EUR'],
   [/^(?:british\s+pounds?|pounds?\s+sterling|sterling)$/i, 'GBP'],
   [/^canadian\s+dollars?$/i, 'CAD'],
@@ -29,7 +34,7 @@ const CURRENCY_NAMES: Array<[RegExp, string]> = [
 ];
 
 const PREFIXED_DOLLAR_SYMBOLS: Array<[RegExp, string]> = [
-  [/^(?:US|U\.S\.)\$$/i, 'USD'],
+  [/^(?:US|USD|U\.S\.)\$$/i, 'USD'],
   [/^(?:CA|CAD|C)\$$/i, 'CAD'],
   [/^(?:AU|AUD|A)\$$/i, 'AUD'],
 ];
@@ -41,7 +46,10 @@ const PREFIXED_DOLLAR_SYMBOLS: Array<[RegExp, string]> = [
 export function normalizeCurrencyCode(value: string | null | undefined): string | null {
   const text = value?.trim();
   if (!text) return null;
-  if (/^[A-Za-z]{3}$/.test(text)) return text.toUpperCase();
+  if (/^[A-Za-z]{3}$/.test(text)) {
+    const code = text.toUpperCase();
+    return ISO_CURRENCIES.has(code) ? code : null;
+  }
   if (text === '€') return 'EUR';
   if (text === '£') return 'GBP';
   for (const [pattern, code] of PREFIXED_DOLLAR_SYMBOLS) {
@@ -101,7 +109,7 @@ export function detectInvoiceCurrency(input: {
 }): DetectedInvoiceCurrency {
   const printed = input.extractedCurrency?.trim() ?? '';
   const modelCode = normalizeCurrencyCode(printed);
-  const modelUnresolved = Boolean(printed) && !modelCode && printed !== '$';
+  const modelUnresolved = Boolean(printed) && !modelCode && printed !== '$' && !NO_CURRENCY_ANSWERS.has(printed.toLowerCase());
 
   const signals = input.amountTexts.map(amountSignal);
   const codes = new Set<string>();
@@ -149,6 +157,8 @@ export interface ResolveInvoiceCurrencyInput {
   lookupSupplierCurrencies: (supplierWID: string) => Promise<SupplierCurrencies>;
 }
 
+const COMMA_DECIMAL_AMOUNT = /\d,\d{1,2}(?!\d)/;
+
 function fallbackOrNote(existingInvoice: boolean | undefined, reason: string, printed?: string): Pick<InvoiceCurrencyDecision, 'currencyWID' | 'fallbackLabel' | 'reviewNote'> {
   const shown = printed ? ` instead of ${printed}` : '';
   if (existingInvoice) {
@@ -177,6 +187,11 @@ export async function resolveInvoiceCurrency(input: ResolveInvoiceCurrencyInput)
 
   const code = detected.code as string;
   if (code === DEFAULT_INVOICE_CURRENCY) return { documentCurrency: code };
+
+  // The amount parser reads "8.573,40" as 8.57, so a euro invoice in that format must not look verified.
+  if (input.amountTexts.some(text => text && COMMA_DECIMAL_AMOUNT.test(text))) {
+    return { documentCurrency: code, ...fallbackOrNote(input.existingInvoice, 'an amount is printed with a comma as the decimal separator, which the amount parser does not read correctly, so check every amount', code) };
+  }
 
   const withDocument = (decision: ReturnType<typeof fallbackOrNote>): InvoiceCurrencyDecision => ({ documentCurrency: code, ...decision });
   const supplierWID = input.supplierWID?.trim();
