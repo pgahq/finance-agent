@@ -8,7 +8,7 @@ import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines
 import { attachmentContentParts, convertOfficeAttachmentsForModel } from './invoice_ocr.js';
 import { supplierNamesMatch } from './po_supplier.js';
 import { findUniqueSupplierByNameEvidence } from './supplier_match.js';
-import { resolveSupplierIdFromText, resolveSupplierIdHints } from './supplier_note_hints.js';
+import { extractSupplierNoteHints, resolveSupplierIdFromText, resolveSupplierIdHints } from './supplier_note_hints.js';
 import type { InvoiceData, PresignedAttachment } from './types.js';
 import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { normalizePrintedDate, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
@@ -44,6 +44,12 @@ export type ReimbursementRead = ReimbursementPacket & {
   notConfirmed?: NotConfirmedFact[];
   /** The reads did not agree on a readable total; the form's own arithmetic confirmed this one. */
   confirmedByFormMath?: FormMathSummary;
+  /**
+   * `payeeSupplierId` was found by only one of the two reads, not both. `resolvePayee` then also checks the ID
+   * named elsewhere in the Intercom conversation; a different one that also matches the payee stops the packet,
+   * rather than silently preferring the one-read ID over a correction AP may have made in a later note.
+   */
+  payeeSupplierIdFromOneRead?: boolean;
 };
 
 /**
@@ -304,14 +310,28 @@ interface Disagreement {
 }
 
 /**
+ * The Supplier ID to carry forward once the reads do not conflict on it: the one a read found when the other found
+ * none, in whichever order. `resolvePayee` still checks it against the supplier cache and the name on the form.
+ */
+function mergedPayeeSupplierId(first: ReimbursementPacket, second: ReimbursementPacket): string | null {
+  return comparableId(first.payeeSupplierId) === null && comparableId(second.payeeSupplierId) !== null
+    ? second.payeeSupplierId
+    : first.payeeSupplierId;
+}
+
+/**
  * Every fact the two reads disagree on, in a fixed order. The form amount joins the list only when asked and only
- * when both reads found one; a total found by one read and missing from the other is not a disagreement.
+ * when both reads found one; a total found by one read and missing from the other is not a disagreement. The same
+ * holds for the payee Supplier ID: only two different IDs disagree, because the ID is checked against the supplier
+ * cache and the payee's name before it is used.
  */
 function disagreements(first: ReimbursementPacket, second: ReimbursementPacket, includeAmount: boolean): Disagreement[] {
   const found: Disagreement[] = [];
   if (first.kind !== second.kind) found.push({ phrase: 'whether it is a reimbursement' });
   if (!sameName(first.payeeName, second.payeeName)) found.push({ phrase: 'the payee', field: 'payeeName' });
-  if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) found.push({ phrase: 'the payee Supplier ID' });
+  const firstId = comparableId(first.payeeSupplierId);
+  const secondId = comparableId(second.payeeSupplierId);
+  if (firstId !== null && secondId !== null && firstId !== secondId) found.push({ phrase: 'the payee Supplier ID' });
   if (includeAmount && !isBlank(first.formAmountToPay) && !isBlank(second.formAmountToPay)
     && amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
     found.push({ phrase: "the form's Amount to Pay", field: 'formAmount' });
@@ -535,10 +555,17 @@ export async function readReimbursementPacket(
       notConfirmed: [...notConfirmed],
     };
   }
-  if (!amountAgreed) return confirmFormTotal(first, second, fileList, parts, abortSignal, startedAt);
+  const foundByOneRead = comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId);
+  if (foundByOneRead) debug('Reimbursement packet Supplier ID found by only one read', { first: first.payeeSupplierId, second: second.payeeSupplierId });
+  const agreed: ReimbursementRead = {
+    ...first,
+    payeeSupplierId: mergedPayeeSupplierId(first, second),
+    ...(foundByOneRead ? { payeeSupplierIdFromOneRead: true } : {}),
+  };
+  if (!amountAgreed) return confirmFormTotal(agreed, second, fileList, parts, abortSignal, startedAt);
   const agreedLabel = payableTotalLabel(first.formAmountLabel);
   const sameLabel = agreedLabel !== undefined && agreedLabel.toLowerCase() === payableTotalLabel(second.formAmountLabel)?.toLowerCase();
-  return sameLabel ? first : { ...first, formAmountLabel: null };
+  return sameLabel ? agreed : { ...agreed, formAmountLabel: null };
 }
 
 function cents(amount: number): number {
@@ -608,7 +635,7 @@ type PayeeResult = AppliedReimbursement['payee'] | { failure: string };
 
 async function resolvePayee(
   db: DatabaseConnection,
-  packet: ReimbursementPacket,
+  packet: ReimbursementRead,
   defaultSupplierWid: string | undefined,
   emailContext: EmailContextInput
 ): Promise<PayeeResult> {
@@ -618,6 +645,19 @@ async function resolvePayee(
   const printedId = packet.payeeSupplierId?.match(SUPPLIER_ID_PATTERN)?.[0];
   if (printedId) {
     const supplierId = printedId.toUpperCase();
+    // Only one of the two reads found this ID. Before this fix that stopped the packet outright; now a cheaper
+    // guard: if AP (or the supplier) separately named a different Supplier ID for this payee in the Intercom
+    // conversation, that is a real conflict the one-read ID must not silently win — stop instead of guessing.
+    // Dropping this ID from the extracted list first means a thread that names both the original ID and a
+    // correction is not `ambiguous` (resolveSupplierIdFromText guesses between none), it is this exact conflict.
+    if (packet.payeeSupplierIdFromOneRead) {
+      const otherIds = extractSupplierNoteHints(emailContext?.plainTextBody).supplierIds.filter((id) => id !== supplierId);
+      const conflict = (await resolveSupplierIdHints(db, otherIds))
+        .find((other) => other.supplierName && supplierNamesMatch(nameOnForm, other.supplierName));
+      if (conflict) {
+        return { failure: `Supplier ID ${supplierId}, found by only one of the two packet reads, conflicts with Supplier ID ${conflict.supplierId} named in the Intercom conversation` };
+      }
+    }
     const [hint] = await resolveSupplierIdHints(db, [supplierId]);
     if (!hint) return { failure: `Supplier ID ${supplierId} is not in the supplier cache` };
     if (!hint.supplierName || !supplierNamesMatch(nameOnForm, hint.supplierName)) {
