@@ -1488,7 +1488,7 @@ function getCurrencyResetOptions(
 }
 
 function isCurrencyValidationError(validationText: string): boolean {
-  return /\bcurrenc(?:y|ies)\b|Currency_(?:Reference|ID)|exchange\s+rate/i.test(validationText);
+  return /Currency_(?:Reference|ID)|exchange\s+rate|\binvalid\s+currency\b|\bcurrenc(?:y|ies)\b[^.]{0,80}?(?:\bnot\s+(?:valid|allowed|accepted|permitted|supported|defined|active)\b|\bisn't\b|\bis\s+invalid\b)/i.test(validationText);
 }
 
 function getFallbackRetryBuildOptions(

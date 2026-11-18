@@ -8180,6 +8180,18 @@ describe('Workday utilities', () => {
         expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
       });
 
+      it('does not drop the currency for a fault that only mentions it in passing', async () => {
+        const mockClient = mockSoapClient();
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          requests.push(request);
+          callback({ Validation_Fault: { Validation_Error: { Message: 'The line amount must be greater than zero in the invoice currency.' } } }, null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest({ currencyWID: 'EUR' })).rejects.toBeDefined();
+        expect(requests.every(request => currencyOf(request).$value === 'EUR')).toBe(true);
+      });
+
       it('does not treat a currency fault as retryable when the currency sent was already USD', async () => {
         const mockClient = mockSoapClient();
         mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
