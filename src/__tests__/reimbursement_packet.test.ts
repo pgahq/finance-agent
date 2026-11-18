@@ -29,7 +29,10 @@ import {
   packetDisagreement,
   parseFormAmountToPay,
   readReimbursementPacket,
+  reimbursementCodingLine,
+  reimbursementCodingNote,
   reimbursementDescription,
+  reimbursementMatchingContext,
   reimbursementNote,
   reimbursementOcr,
   reimbursementSlackLines,
@@ -59,6 +62,7 @@ const packet = (overrides: Partial<ReimbursementPacket> = {}): ReimbursementPack
   formDate: '11/02/2026',
   expenseKind: 'hotel',
   purpose: '2026 Sample Marathon Team',
+  formCoding: null,
   evidence: ['Expense Reimbursement Form', 'Amount to Pay $1,000.00'],
   ...overrides,
 });
@@ -193,6 +197,66 @@ describe('readReimbursementPacket', () => {
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(read?.kind).toBe('supplier_invoice');
     expect(aiResponse).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the coding the form prints', () => {
+  const attachments = [{ fileName: 'packet.pdf', contentType: 'application/pdf' }] as never;
+  const coding = { codingValue: '410', costCenter: 'Sample Programs', lineOfBusiness: 'SPR', spendCategory: null };
+  const readBoth = async (first: ReimbursementPacket['formCoding'], second: ReimbursementPacket['formCoding']) => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet({ formCoding: first }))
+      .mockResolvedValueOnce(packet({ formCoding: second }));
+    return readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+  };
+
+  it('asks both reads for it and keeps it when they copy the same values', async () => {
+    const read = await readBoth(coding, { ...coding, costCenter: '  sample   PROGRAMS ' });
+    expect(read).not.toHaveProperty('unconfirmed');
+    expect(read?.formCoding).toEqual({ codingValue: '410', costCenter: 'Sample Programs', lineOfBusiness: 'SPR', spendCategory: null });
+  });
+
+  it('keeps only the fields both reads agree on, and never stops the packet for a coding disagreement', async () => {
+    const read = await readBoth(coding, { ...coding, costCenter: 'Sample Programme', lineOfBusiness: null });
+    expect(read).not.toHaveProperty('unconfirmed');
+    expect(read?.formCoding).toEqual({ codingValue: '410', costCenter: null, lineOfBusiness: null, spendCategory: null });
+    expect(debug).toHaveBeenCalledWith('Reimbursement packet coding not agreed by both reads', expect.objectContaining({ dropped: ['costCenter', 'lineOfBusiness'] }));
+    expect(await decideReimbursement(db as never, read)).toMatchObject({ outcome: 'apply', reimbursement: { formCoding: { codingValue: '410', costCenter: null } } });
+  });
+
+  it('drops coding only one read found, since nothing later checks it against another source', async () => {
+    expect((await readBoth(coding, null))?.formCoding).toBeNull();
+    expect((await readBoth(null, coding))?.formCoding).toBeNull();
+  });
+
+  it('leaves coding null when neither read found any or every field disagrees', async () => {
+    expect((await readBoth(null, null))?.formCoding).toBeNull();
+    expect((await readBoth(coding, { codingValue: '420', costCenter: 'Other', lineOfBusiness: 'OTH', spendCategory: 'Lodging' }))?.formCoding).toBeNull();
+  });
+
+  it('carries the agreed coding through a total confirmed by the form arithmetic', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet({ formAmountToPay: null, formCoding: coding }))
+      .mockResolvedValueOnce(packet({ formAmountToPay: null, formCoding: coding }))
+      .mockResolvedValue({
+        grandTotal: '$1,000.00',
+        grandTotalLabel: 'TOTALS',
+        columns: [{ label: 'Hotel', total: '$1,000.00', entries: ['$1,000.00'] }],
+      });
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.confirmedByFormMath).toBeDefined();
+    expect(read?.formCoding).toEqual(coding);
+  });
+
+  it('is left out of the applied reimbursement when the form prints none', async () => {
+    const decision = await decideReimbursement(db as never, packet());
+    if (decision.outcome !== 'apply') throw new Error('expected apply');
+    expect(decision.reimbursement).not.toHaveProperty('formCoding');
+  });
+
+  it('is carried onto the applied reimbursement', async () => {
+    const decision = await decideReimbursement(db as never, packet({ formCoding: coding }));
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { formCoding: coding } });
   });
 });
 
@@ -1245,5 +1309,53 @@ describe('applied reimbursement outputs', () => {
     expect(reimbursementSlackLines(withMismatch)).toContainEqual(`Note: ${mismatchSentence}`);
     // Unaffected when there is nothing to report.
     expect(reimbursementNote(applied)).not.toContain('Supplier ID named in the Intercom conversation');
+  });
+
+  describe('the form coding', () => {
+    const withCoding: AppliedReimbursement = {
+      ...applied,
+      formCoding: { codingValue: '410', costCenter: 'Sample "Programs"', lineOfBusiness: 'SPR', spendCategory: null },
+    };
+
+    it('tells the matching model to code from the email or notes first, and the form for any field they do not name', () => {
+      const context = reimbursementMatchingContext(withCoding);
+      expect(context).toContain(`coding "410", cost center "Sample 'Programs'", LOB "SPR"`);
+      expect(context).not.toContain('spend category');
+      expect(context).toContain('Take the company, cost center, and other coding from the email text or AP notes when they name any.');
+      expect(context).toContain('For each coding field they do not name, use the form\'s coding above');
+      expect(context).toContain('resolveReferenceCode');
+      expect(context).toContain('the email text or AP notes win');
+      expect(context).toContain('The supplier is already fixed to that person.');
+      expect(context).not.toContain('only from the email text');
+    });
+
+    it('keeps the email-only instruction when the form prints no coding', () => {
+      const context = reimbursementMatchingContext(applied);
+      expect(context).toContain('Take the company, cost center, and other coding only from the email text or AP notes.');
+      expect(context).not.toContain('reimbursement form itself prints this coding');
+    });
+
+    it('does not show a field the reads did not agree on', () => {
+      const context = reimbursementMatchingContext({ ...applied, formCoding: { codingValue: null, costCenter: 'Sample Programs', lineOfBusiness: null, spendCategory: null } });
+      expect(context).toContain('cost center "Sample Programs".');
+      expect(context).not.toContain('coding "');
+    });
+
+    it('builds one coding line a company code or name on the form can be verified against', () => {
+      expect(reimbursementCodingLine(withCoding)).toBe(`Coding: 410 / Cost Center: Sample "Programs" / LOB: SPR`);
+      expect(reimbursementCodingLine({ formCoding: { codingValue: null, costCenter: 'Sample Programs', lineOfBusiness: null, spendCategory: 'Lodging' } }))
+        .toBe('Coding: Cost Center: Sample Programs / Spend Category: Lodging');
+      expect(reimbursementCodingLine(applied)).toBeUndefined();
+      expect(reimbursementCodingLine({ formCoding: { codingValue: null, costCenter: null, lineOfBusiness: null, spendCategory: null } })).toBeUndefined();
+    });
+
+    it('says in the note what the form printed and how it was used, and nothing when it printed none', () => {
+      expect(reimbursementCodingNote(applied, { companyFromForm: false, defaultCompany: false })).toBe('');
+      expect(reimbursementCodingNote(withCoding, { companyFromForm: false, defaultCompany: false })).toBe(
+        `Reimbursement form coding: the form prints coding "410", cost center "Sample 'Programs'", LOB "SPR". It is used for each coding field the email text and AP notes do not name; when they name different coding, the email text and AP notes win.`
+      );
+      expect(reimbursementCodingNote(withCoding, { companyFromForm: true, defaultCompany: false })).toContain("The company came from the form's coding.");
+      expect(reimbursementCodingNote(withCoding, { companyFromForm: false, defaultCompany: true })).toContain('so the default coding was applied and none of this coding was used.');
+    });
   });
 });
