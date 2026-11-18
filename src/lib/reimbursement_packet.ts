@@ -44,6 +44,12 @@ export type ReimbursementRead = ReimbursementPacket & {
   notConfirmed?: NotConfirmedFact[];
   /** The reads did not agree on a readable total; the form's own arithmetic confirmed this one. */
   confirmedByFormMath?: FormMathSummary;
+  /**
+   * `payeeSupplierId` was found by only one of the two reads, not both. `resolvePayee` then also checks the ID
+   * named elsewhere in the Intercom conversation; a different one that also matches the payee stops the packet,
+   * rather than silently preferring the one-read ID over a correction AP may have made in a later note.
+   */
+  payeeSupplierIdFromOneRead?: boolean;
 };
 
 /**
@@ -549,7 +555,13 @@ export async function readReimbursementPacket(
       notConfirmed: [...notConfirmed],
     };
   }
-  const agreed: ReimbursementPacket = { ...first, payeeSupplierId: mergedPayeeSupplierId(first, second) };
+  const foundByOneRead = comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId);
+  if (foundByOneRead) debug('Reimbursement packet Supplier ID found by only one read', { first: first.payeeSupplierId, second: second.payeeSupplierId });
+  const agreed: ReimbursementRead = {
+    ...first,
+    payeeSupplierId: mergedPayeeSupplierId(first, second),
+    ...(foundByOneRead ? { payeeSupplierIdFromOneRead: true } : {}),
+  };
   if (!amountAgreed) return confirmFormTotal(agreed, second, fileList, parts, abortSignal, startedAt);
   const agreedLabel = payableTotalLabel(first.formAmountLabel);
   const sameLabel = agreedLabel !== undefined && agreedLabel.toLowerCase() === payableTotalLabel(second.formAmountLabel)?.toLowerCase();
@@ -623,7 +635,7 @@ type PayeeResult = AppliedReimbursement['payee'] | { failure: string };
 
 async function resolvePayee(
   db: DatabaseConnection,
-  packet: ReimbursementPacket,
+  packet: ReimbursementRead,
   defaultSupplierWid: string | undefined,
   emailContext: EmailContextInput
 ): Promise<PayeeResult> {
@@ -633,6 +645,15 @@ async function resolvePayee(
   const printedId = packet.payeeSupplierId?.match(SUPPLIER_ID_PATTERN)?.[0];
   if (printedId) {
     const supplierId = printedId.toUpperCase();
+    // Only one of the two reads found this ID. Before this fix that stopped the packet outright; now a cheaper
+    // guard: if AP (or the supplier) separately named a different Supplier ID for this payee in the Intercom
+    // conversation, that is a real conflict the one-read ID must not silently win — stop instead of guessing.
+    if (packet.payeeSupplierIdFromOneRead) {
+      const noteLookup = await resolveSupplierIdFromText(db, emailContext?.plainTextBody, nameOnForm);
+      if (noteLookup.outcome === 'resolved' && noteLookup.supplierId !== supplierId) {
+        return { failure: `Supplier ID ${supplierId}, found by only one of the two packet reads, conflicts with Supplier ID ${noteLookup.supplierId} named in the Intercom conversation` };
+      }
+    }
     const [hint] = await resolveSupplierIdHints(db, [supplierId]);
     if (!hint) return { failure: `Supplier ID ${supplierId} is not in the supplier cache` };
     if (!hint.supplierName || !supplierNamesMatch(nameOnForm, hint.supplierName)) {

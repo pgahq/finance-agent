@@ -13,6 +13,7 @@ jest.mock('../lib/invoice_ocr.js', () => ({
   attachmentContentParts: jest.fn(() => [{ type: 'file', data: 'pdf', mediaType: 'application/pdf' }]),
 }));
 
+import { debug } from '@pga/logger';
 import { findDocumentsContainingWords } from '../lib/database.js';
 import { getAiResponse } from '../lib/ai.js';
 import { reimbursementFormMathPrompt, type ReimbursementFormMath } from '../prompts/reimbursement_packet_prompt.js';
@@ -361,6 +362,44 @@ describe('a Supplier ID only one read found', () => {
   it('still stops when the reads disagree on the payee, even if one found an ID', async () => {
     reads({ payeeSupplierId: 'S-000123' }, { payeeSupplierId: null, payeeName: 'JORDAN P REYES' });
     expect((await read())?.unconfirmed).toBe('the payee');
+  });
+
+  it('logs that only one read found the Supplier ID, and does not log it when both reads agreed', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    reads({ payeeSupplierId: null }, { payeeSupplierId: 'S-000123' });
+    await read();
+    expect(debug).toHaveBeenCalledWith('Reimbursement packet Supplier ID found by only one read', { first: null, second: 'S-000123' });
+
+    (debug as jest.Mock).mockClear();
+    reads({ payeeSupplierId: 'S-000123' }, { payeeSupplierId: 'S-000123' });
+    await read();
+    expect(debug).not.toHaveBeenCalledWith('Reimbursement packet Supplier ID found by only one read', expect.anything());
+  });
+
+  it('stops when a different Supplier ID for the same payee is named in the conversation, rather than trusting the one-read ID', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    reads({ payeeSupplierId: null }, { payeeSupplierId: 'S-000123' });
+    const result = await read();
+    const decision = await decideReimbursement(db as never, result, {
+      emailContext: { plainTextBody: 'AP note: actually this is Supplier ID S-000999.' } as never,
+    });
+    expect(decision).toMatchObject({
+      outcome: 'manual_entry',
+      manual: { reason: 'Supplier ID S-000123, found by only one of the two packet reads, conflicts with Supplier ID S-000999 named in the Intercom conversation' },
+    });
+  });
+
+  it('still books the one-read ID when the conversation names the same ID, or none at all', async () => {
+    db.query.mockResolvedValue([{ workday_id: 'wid-ellery', metadata: payeeDocument.metadata }]);
+    reads({ payeeSupplierId: null }, { payeeSupplierId: 'S-000123' });
+    const sameId = await decideReimbursement(db as never, await read(), {
+      emailContext: { plainTextBody: 'AP note: this is Supplier ID S-000123, confirmed.' } as never,
+    });
+    expect(sameId).toMatchObject({ outcome: 'apply', reimbursement: { payee: { supplierId: 'S-000123', matchedBy: 'supplier_id' } } });
+
+    reads({ payeeSupplierId: null }, { payeeSupplierId: 'S-000123' });
+    const noNote = await decideReimbursement(db as never, await read());
+    expect(noNote).toMatchObject({ outcome: 'apply', reimbursement: { payee: { supplierId: 'S-000123', matchedBy: 'supplier_id' } } });
   });
 });
 
