@@ -8180,6 +8180,30 @@ describe('Workday utilities', () => {
         expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
       });
 
+      it.each([
+        'EUR is not an accepted currency for supplier Acme.',
+        'The currency is not one of the accepted currencies for the supplier.',
+        'Currency EUR does not match the supplier currency.',
+      ])('retries in USD for the currency fault wording %p', async (message) => {
+        const mockClient = mockSoapClient();
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          requests.push(request);
+          if (requests.length === 1) {
+            callback({ Validation_Fault: { Validation_Error: { Message: message } } }, null);
+            return;
+          }
+          created(callback);
+        });
+
+        const outcome = await submitNewSupplierInvoiceForTest({ currencyWID: 'EUR' });
+
+        expect(requests.map(request => currencyOf(request).$value)).toEqual(['EUR', 'USD']);
+        expect(outcome.appliedFallbacks.some(f => f.field === 'currency')).toBe(true);
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
       it('does not drop the currency for a fault that only mentions it in passing', async () => {
         const mockClient = mockSoapClient();
         const requests: any[] = [];

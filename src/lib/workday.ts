@@ -1487,8 +1487,14 @@ function getCurrencyResetOptions(
   };
 }
 
+const CURRENCY_FAULT_PATTERNS = [
+  /Currency_(?:Reference|ID)|exchange\s+rate|\binvalid\s+currency\b/i,
+  /\b(?:valid|allowed|accepted|permitted|supported)\s+currenc(?:y|ies)\b/i,
+  /\bcurrenc(?:y|ies)\b[^.]{0,80}?(?:\bnot\s+(?:valid|allowed|accepted|permitted|supported|defined|active|one\s+of)\b|\bisn't\b|\bis\s+invalid\b|\bdo(?:es\s+not|esn't)\s+match\b)/i,
+];
+
 function isCurrencyValidationError(validationText: string): boolean {
-  return /Currency_(?:Reference|ID)|exchange\s+rate|\binvalid\s+currency\b|\bcurrenc(?:y|ies)\b[^.]{0,80}?(?:\bnot\s+(?:valid|allowed|accepted|permitted|supported|defined|active)\b|\bisn't\b|\bis\s+invalid\b)/i.test(validationText);
+  return CURRENCY_FAULT_PATTERNS.some(pattern => pattern.test(validationText));
 }
 
 function getFallbackRetryBuildOptions(
