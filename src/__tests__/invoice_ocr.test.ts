@@ -71,6 +71,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedInvoiceDate: '2026-10-02',
   extractedDueDate: '2026-11-01',
   extractedAmountDue: '$1,540.00',
+  extractedCurrency: null,
   extractedSuppliersInvoiceNumber: '401',
   invoiceNumbersInDocument: ['401'],
   extractedFreightAmount: null,
@@ -127,6 +128,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedInvoiceDate: '2026-10-02',
   extractedDueDate: '2026-11-01',
   extractedAmountDue: '$1,540.00',
+  extractedCurrency: '',
   extractedSuppliersInvoiceNumber: '401',
   invoiceNumbersInDocument: ['401'],
   extractedFreightAmount: '',
@@ -1311,6 +1313,30 @@ describe('invoice OCR pass', () => {
       expect(InvoiceOcrSchema.shape.extractedDueDate).toBeDefined();
       expect(invoiceOcrPrompt).toContain('Never compute a due date from payment terms such as "Net 30"');
       expect(invoiceOcrPrompt).toContain('Invoice Date 10/10/26 and Due Date 11/11/26 must return extractedInvoiceDate "2026-10-10" and extractedDueDate "2026-11-11"');
+    });
+  });
+
+  describe('invoice currency', () => {
+    it('is a required string, so the schema stays inside the structured-output limits', () => {
+      expect(InvoiceOcrSchema.shape.extractedCurrency).toBeDefined();
+    });
+
+    it('turns an empty currency back into null and keeps a printed code', () => {
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, extractedCurrency: '' }).extractedCurrency).toBeNull();
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, extractedCurrency: 'EUR' }).extractedCurrency).toBe('EUR');
+    });
+
+    it('carries the OCR currency into the enrichment result, and null without a document read', () => {
+      expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, extractedCurrency: 'GBP' }).extractedCurrency).toBe('GBP');
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).extractedCurrency).toBeNull();
+    });
+
+    it('asks only for a currency the document clearly shows, and treats a bare dollar sign as none', () => {
+      expect(invoiceOcrPrompt).toContain('`extractedCurrency`');
+      expect(invoiceOcrPrompt).toContain('an invoice that prints "Total EUR 8.573,40" returns extractedCurrency "EUR"');
+      expect(invoiceOcrPrompt).toContain('an invoice that prints only "$8,573.40" returns an empty string');
+      expect(invoiceOcrPrompt).toContain('"¥" can be yen or yuan');
+      expect(invoiceOcrPrompt).toContain('Never convert an amount between currencies');
     });
   });
 

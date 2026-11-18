@@ -48,6 +48,7 @@ jest.mock('../lib/workday.js', () => ({
     }]
   }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
+  getSupplierAcceptedCurrencies: jest.fn(),
   getSupplierInvoice: jest.fn().mockResolvedValue({ Invoice_Number: 'SUPIN-412727' }),
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
   getPurchaseOrder: jest.fn().mockResolvedValue(undefined),
@@ -931,6 +932,72 @@ describe('enrich_invoice', () => {
     );
     const { buildNotes } = submitSupplierInvoiceUpdate.mock.calls[0][1];
     expect(buildNotes([])).toContain('Banking information is printed in the attached documents. Verify it before payment.');
+  });
+
+  describe('invoice currency (fictional euro invoice)', () => {
+    const runEuroEnrich = async (accepted: unknown) => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate, getSupplierAcceptedCurrencies } = require('../lib/workday.js');
+      getSupplierAcceptedCurrencies.mockResolvedValue(accepted);
+      enrichmentResponse.mockResolvedValueOnce({
+        supplier: {
+          status: 'matching',
+          confidence: 0.9,
+          extractedInformation: { supplierName: 'Test Supplier', memo: 'Test invoice' },
+          resolvedSupplier: null,
+          potentialDuplicateSuppliers: null,
+          recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+          reason: 'High confidence match'
+        },
+        companyVerification: {
+          status: 'matching',
+          confidence: 0.85,
+          extractedInformation: {},
+          recommended: null,
+          reason: 'Company matches existing assignment'
+        },
+        extractedInvoiceDate: '2026-04-15',
+        extractedAmountDue: '€100.00',
+        extractedCurrency: 'EUR',
+      });
+
+      await processor({
+        data: [{
+          workdayID: 'test-invoice-id',
+          invoiceStatusAsText: 'Draft',
+          supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+          company1: { descriptor: 'Test Company', id: 'COMP-1' },
+          OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+        }]
+      } as any);
+      return { submitSupplierInvoiceUpdate, getSupplierAcceptedCurrencies, params: submitSupplierInvoiceUpdate.mock.calls[0][1] };
+    };
+
+    it('sets the printed currency on the invoice when the supplier accepts it', async () => {
+      const { getSupplierAcceptedCurrencies, params } = await runEuroEnrich({ accepted: ['EUR'] });
+
+      expect(getSupplierAcceptedCurrencies).toHaveBeenCalledWith(expect.anything(), 'SUP-1');
+      expect(params.currencyWID).toBe('EUR');
+      expect(params.buildNotes([])).toContain('Currency: EUR, as printed on the document. The supplier accepts it.');
+    });
+
+    it('leaves the invoice currency alone, with a review note, when the supplier does not accept it', async () => {
+      const { params } = await runEuroEnrich({ accepted: ['USD'] });
+
+      expect(params).not.toHaveProperty('currencyWID');
+      expect(params).not.toHaveProperty('currencyFallbackLabel');
+      expect(params.buildNotes([])).toContain('Currency review: The invoice currency was left as Workday had it, not changed to EUR: the supplier does not accept EUR.');
+    });
+
+    it('lists a currency fallback the update applied and drops the currency claim', async () => {
+      const { params } = await runEuroEnrich({ accepted: ['EUR'] });
+      const label = "fallback currency USD instead of EUR (the default supplier's accepted currencies are not checked)";
+
+      const notes = params.buildNotes([{ field: 'currency', label }]);
+
+      expect(notes).not.toContain('The supplier accepts it');
+      expect(notes).toContain(`Fallback values applied: ${label}`);
+    });
   });
 
   it('uses the existing Workday supplier name when the extracted name has no letters', async () => {

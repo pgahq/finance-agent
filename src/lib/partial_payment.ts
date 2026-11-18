@@ -9,6 +9,7 @@ import {
   restatesHeaderTax,
   type ExtractedInvoiceLine,
 } from './invoice_lines.js';
+import { formatMoney } from './invoice_currency.js';
 import type { PurchaseOrderLine } from './workday.js';
 import { isRetainageHeldLabel } from './retainage_label.js';
 
@@ -34,8 +35,8 @@ function toCents(amount: number): number {
   return Math.round(amount * 100);
 }
 
-function centsDollars(cents: number): string {
-  return formatChargeDollars(cents / 100);
+function centsDollars(cents: number, currency?: string): string {
+  return formatMoney(cents / 100, currency);
 }
 
 function isDepositLabel(label: string): boolean {
@@ -304,14 +305,14 @@ type DepositPoSelection =
   | { status: 'unmatched'; reason: string; ambiguous?: boolean };
 
 /** The one PO line whose amount is the deposit. An open line wins over a consumed one with the same amount. */
-export function selectDepositPoLine(poLines: PurchaseOrderLine[] | undefined, depositCents: number): DepositPoSelection {
+export function selectDepositPoLine(poLines: PurchaseOrderLine[] | undefined, depositCents: number, currency?: string): DepositPoSelection {
   if (!poLines?.length) return { status: 'no_po' };
   const matching = poLines.filter(line => poLineAmountCents(line) === depositCents);
   const open = matching.filter(line => line.availableForInvoicing !== false);
   if (open.length === 1) return { status: 'matched', line: open[0], consumed: false };
   if (matching.length === 1) return { status: 'matched', line: matching[0], consumed: matching[0].availableForInvoicing === false };
-  if (matching.length === 0) return { status: 'unmatched', reason: `no PO line is for ${centsDollars(depositCents)}` };
-  return { status: 'unmatched', reason: `several PO lines are for ${centsDollars(depositCents)}`, ambiguous: true };
+  if (matching.length === 0) return { status: 'unmatched', reason: `no PO line is for ${centsDollars(depositCents, currency)}` };
+  return { status: 'unmatched', reason: `several PO lines are for ${centsDollars(depositCents, currency)}`, ambiguous: true };
 }
 
 const FINAL_PAYMENT_WORDS = new Set(['final', 'remaining']);
@@ -346,10 +347,10 @@ type BalancePoSelection =
  * overage note's "booked on this line" would be false). A candidate smaller than the balance, one whose amount
  * cannot be read, or one that is consumed is left unmatched rather than guessed at.
  */
-export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, balanceCents: number, allowNonExactMatch = true): BalancePoSelection {
+export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, balanceCents: number, allowNonExactMatch = true, currency?: string): BalancePoSelection {
   if (!poLines?.length) return { status: 'no_po' };
 
-  const exact = selectDepositPoLine(poLines, balanceCents);
+  const exact = selectDepositPoLine(poLines, balanceCents, currency);
   if (exact.status === 'matched') return { ...exact, exact: true, described: false };
   if (!allowNonExactMatch) return exact;
   if (exact.status === 'unmatched' && exact.ambiguous) return exact;
@@ -365,7 +366,7 @@ export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, ba
   if (cents < balanceCents) {
     return {
       status: 'unmatched',
-      reason: `the PO's final-payment line is only ${centsDollars(cents)}, less than the ${centsDollars(balanceCents)} amount due`,
+      reason: `the PO's final-payment line is only ${centsDollars(cents, currency)}, less than the ${centsDollars(balanceCents, currency)} amount due`,
     };
   }
   if (candidate.availableForInvoicing === false) {
@@ -375,6 +376,8 @@ export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, ba
 }
 
 export interface PartialPaymentInput {
+  /** ISO code of the document's currency, for the amounts in notes and descriptions; USD when absent. */
+  currency?: string;
   partialPayment: PrintedPartialPayment | null | undefined;
   lineSubtotal: PrintedAmount | null | undefined;
   amountDue: string | null | undefined;
@@ -401,6 +404,7 @@ function notApplied(reason: string, label: string): PartialPaymentPlan {
  * document prints no deposit row.
  */
 export function planPartialPayment(input: PartialPaymentInput): PartialPaymentPlan | undefined {
+  const money = (cents: number) => centsDollars(cents, input.currency);
   const printed = input.partialPayment;
   if (!printed || !isDepositLabel(printed.label)) return undefined;
 
@@ -411,7 +415,7 @@ export function planPartialPayment(input: PartialPaymentInput): PartialPaymentPl
   if (amountDue == null) return notApplied('the amount due is not a readable amount', label);
   const depositCents = toCents(depositAmount);
   if (depositCents !== toCents(amountDue)) {
-    return notApplied(`the printed deposit ${centsDollars(depositCents)} is not the amount due ${centsDollars(toCents(amountDue))}`, label);
+    return notApplied(`the printed deposit ${money(depositCents)} is not the amount due ${money(toCents(amountDue))}`, label);
   }
   const freight = parseCanonicalChargeAmount(input.freightAmount) ?? 0;
   const tax = parseCanonicalChargeAmount(input.taxAmount) ?? 0;
@@ -423,21 +427,21 @@ export function planPartialPayment(input: PartialPaymentInput): PartialPaymentPl
   const printedBase = parseCanonicalChargeAmount(input.lineSubtotal?.amount);
   const baseCents = printedBase != null ? toCents(printedBase) : sumExtractedLineCents(input.lines);
   if (baseCents == null) return notApplied('the document prints no contract total to compare it with', label);
-  if (baseCents <= depositCents) return notApplied(`the deposit ${centsDollars(depositCents)} is not less than the contract total ${centsDollars(baseCents)}`, label);
+  if (baseCents <= depositCents) return notApplied(`the deposit ${money(depositCents)} is not less than the contract total ${money(baseCents)}`, label);
 
   const percent = printedPercent(printed.percent);
   if (percent != null) {
     const expected = Math.round(baseCents * percent / 100);
     if (Math.abs(expected - depositCents) > 1) {
-      return notApplied(`${formatPercent(percent)} of ${centsDollars(baseCents)} is ${centsDollars(expected)}, not the printed ${centsDollars(depositCents)}`, label);
+      return notApplied(`${formatPercent(percent)} of ${money(baseCents)} is ${money(expected)}, not the printed ${money(depositCents)}`, label);
     }
   }
 
-  const selection = selectDepositPoLine(input.poLines, depositCents);
+  const selection = selectDepositPoLine(input.poLines, depositCents, input.currency);
   if (selection.status === 'unmatched') return notApplied(selection.reason, label);
 
-  const depositText = centsDollars(depositCents);
-  const baseText = centsDollars(baseCents);
+  const depositText = money(depositCents);
+  const baseText = money(baseCents);
   const share = percent != null ? `${formatPercent(percent)} of ${baseText}` : `part of ${baseText}`;
   const description = `${label} (${share})`;
   const lineCount = input.lines.length;
@@ -445,6 +449,7 @@ export function planPartialPayment(input: PartialPaymentInput): PartialPaymentPl
     ? ` The PO line for this amount is already fully invoiced or closed; check whether this deposit was billed before approving.`
     : '';
   const lineText = lineCount > 0 ? ` (${lineCount} printed line${lineCount === 1 ? '' : 's'})` : '';
+  // Machine-read by the line parsers (which accept a plain $ prefix only), so it is never currency-formatted.
   const amount = formatChargeDollars(depositCents / 100);
   return {
     applied: true,
@@ -472,6 +477,8 @@ export interface PrintedRetainage {
 }
 
 export interface BalanceInvoiceInput {
+  /** ISO code of the document's currency, for the amounts in notes and descriptions; USD when absent. */
+  currency?: string;
   /** Payments or deposits the document shows as already received. */
   priorPayments: PrintedPriorPayment[] | null | undefined;
   /** Retainage a construction pay application holds back from the contract total to date. */
@@ -523,8 +530,8 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined, z
   return total > 0 ? total : undefined;
 }
 
-// A whole printed amount (`$61,250.00`, `(61,250.00)`, `61250.00-`), not text that merely contains digits.
-const WHOLE_AMOUNT = /^\(?\s*[-\u2212]?\s*\$?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*-?$/;
+// A whole printed amount (`$61,250.00`, `€61,250.00`, `(61,250.00)`, `61250.00-`), not text that merely contains digits.
+const WHOLE_AMOUNT = /^\(?\s*[-\u2212]?\s*(?:(?:C\$|A\$|CN¥|[$€£¥]|(?:USD|EUR|GBP|CAD|AUD|CHF|JPY|CNY))\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*-?$/;
 
 function readPrintedAmount(raw: string | null | undefined): number | undefined {
   const text = raw?.trim();
@@ -559,15 +566,15 @@ function retainageCents(retainage: PrintedRetainage | null | undefined): number 
  * remaining-amount field, so covering the total is the check. Anything else leaves the line unpinned for the merge
  * to code, and the note says so.
  */
-function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, dueCents: number, baseCents: number): DepositPoSelection | { status: 'unpinned'; reason: string } {
-  const exact = selectDepositPoLine(poLines, dueCents);
+function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, dueCents: number, baseCents: number, currency?: string): DepositPoSelection | { status: 'unpinned'; reason: string } {
+  const exact = selectDepositPoLine(poLines, dueCents, currency);
   if (exact.status !== 'unmatched') return exact;
   const lines = poLines ?? [];
   const baseLines = lines.filter(line => poLineAmountCents(line) === baseCents && line.availableForInvoicing !== false);
   if (baseLines.length === 1) return { status: 'matched', line: baseLines[0], consumed: false };
   const onlyLineCents = lines.length === 1 ? poLineAmountCents(lines[0]) : undefined;
   if (onlyLineCents != null && onlyLineCents >= baseCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
-  return { status: 'unpinned', reason: `${exact.reason}, and no open PO line can be picked for the ${centsDollars(baseCents)} total to date (an only line must cover it), so the PO line was left to the line merge` };
+  return { status: 'unpinned', reason: `${exact.reason}, and no open PO line can be picked for the ${centsDollars(baseCents, currency)} total to date (an only line must cover it), so the PO line was left to the line merge` };
 }
 
 function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
@@ -589,6 +596,7 @@ function lessWord(quotedLabel: string): string {
  * signal, or when the lines do not exceed the amount due.
  */
 export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPlan | undefined {
+  const money = (cents: number) => centsDollars(cents, input.currency);
   const amountDue = parseCanonicalChargeAmount(input.amountDue);
   if (amountDue == null || amountDue <= 0) return undefined;
   const dueCents = toCents(amountDue);
@@ -629,12 +637,12 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
     if (!settlementPrinted && !payApplication) return undefined;
     if (payApplication) {
       if (!settlementPrinted) {
-        return balanceNotApplied(`the work completed to date ${centsDollars(contractCents)} is not the current payment due ${centsDollars(dueCents)}, and no previous payments were read`, true);
+        return balanceNotApplied(`the work completed to date ${money(contractCents)} is not the current payment due ${money(dueCents)}, and no previous payments were read`, true);
       }
-      const parts = [...(retainedCents != null ? [`${centsDollars(retainedCents)} retainage`] : []), ...(paidCents != null ? [`${centsDollars(paidCents)} in previous payments`] : [])];
-      return balanceNotApplied(`${isCompletedToDateLabel(input.lineSubtotal?.label) ? `the work completed to date ${centsDollars(contractCents)}` : `the ${centsDollars(contractCents)} contract total`} less ${parts.join(' and ')} is ${centsDollars(contractCents - settledCents)}, not the current payment due ${centsDollars(dueCents)}`, true);
+      const parts = [...(retainedCents != null ? [`${money(retainedCents)} retainage`] : []), ...(paidCents != null ? [`${money(paidCents)} in previous payments`] : [])];
+      return balanceNotApplied(`${isCompletedToDateLabel(input.lineSubtotal?.label) ? `the work completed to date ${money(contractCents)}` : `the ${money(contractCents)} contract total`} less ${parts.join(' and ')} is ${money(contractCents - settledCents)}, not the current payment due ${money(dueCents)}`, true);
     }
-    return balanceNotApplied(`the printed payments total ${centsDollars(paidCents as number)}, which leaves ${centsDollars(contractCents - (paidCents as number))} of the ${centsDollars(contractCents)} contract total, not the amount due ${centsDollars(dueCents)}`);
+    return balanceNotApplied(`the printed payments total ${money(paidCents as number)}, which leaves ${money(contractCents - (paidCents as number))} of the ${money(contractCents)} contract total, not the amount due ${money(dueCents)}`);
   }
 
   const freight = parseCanonicalChargeAmount(input.freightAmount) ?? 0;
@@ -653,13 +661,13 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   // until AP sees that case too. A pay application keeps its own PO-line rule (the whole-contract line a
   // pay application is normally billed against), not the non-exact final-payment match.
   const selection = payApplication
-    ? selectPayApplicationPoLine(input.poLines, dueCents, contractCents)
-    : selectBalancePoLine(input.poLines, dueCents, paymentsExplainGap);
+    ? selectPayApplicationPoLine(input.poLines, dueCents, contractCents, input.currency)
+    : selectBalancePoLine(input.poLines, dueCents, paymentsExplainGap, input.currency);
   if (selection.status === 'unmatched') return balanceNotApplied(selection.reason, payApplication);
 
   const label = printable(input.lineSubtotal?.label) || printable(input.lines[0]?.description) || 'Contract total';
-  const dueText = centsDollars(dueCents);
-  const contractText = centsDollars(contractCents);
+  const dueText = money(dueCents);
+  const contractText = money(contractCents);
   const lineCount = input.lines.length;
   const lineText = lineCount > 0 ? ` (${lineCount} printed line${lineCount === 1 ? '' : 's'})` : '';
   const amount = formatChargeDollars(dueCents / 100);
@@ -675,13 +683,13 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
     const retainageLabel = printable(input.retainage?.label) || 'Retainage';
     const percent = printedPercent(input.retainage?.percent);
     const percentText = percent != null ? ` (${formatPercent(percent)})` : '';
-    const retainedText = retainedCents != null ? centsDollars(retainedCents) : undefined;
+    const retainedText = retainedCents != null ? money(retainedCents) : undefined;
     const percentCheck = retainedCents != null && percent != null && Math.abs(Math.round(contractCents * percent / 100) - retainedCents) > 1
-      ? ` ${formatPercent(percent)} of ${contractText} is ${centsDollars(Math.round(contractCents * percent / 100))}, not the printed retainage ${retainedText}; check the retainage against the PDF.`
+      ? ` ${formatPercent(percent)} of ${contractText} is ${money(Math.round(contractCents * percent / 100))}, not the printed retainage ${retainedText}; check the retainage against the PDF.`
       : '';
     const retainageClause = retainedText != null ? `, ${lessWord(`"${retainageLabel}"`)} "${retainageLabel}"${percentText} ${retainedText}` : '';
-    const noPaymentsClause = input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed';
-    const paidClause = paidCents != null ? `, ${lessWord(paymentsText(input.priorPayments))} ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : settledCents === 0 ? noPaymentsClause : '';
+    const noPaymentsClause = input.priorPayments?.length ? `, and the printed previous payments total ${money(0)}` : ' and no previous payments are printed';
+    const paidClause = paidCents != null ? `, ${lessWord(paymentsText(input.priorPayments))} ${paymentsText(input.priorPayments)} ${money(paidCents)}` : settledCents === 0 ? noPaymentsClause : '';
     const basis = `"${label}" is ${contractText}${retainageClause}${paidClause}, which leaves the ${dueText} current payment due${lineText}.${percentCheck}`;
     return {
       applied: true,
@@ -691,15 +699,15 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       note: `${basis} The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
       amountDueNote: `pay application, ${contractText} to date`,
       slackLines: [
-        `${label}: ${contractText} to date${retainedText != null ? `, less ${retainedText} retainage` : ''}${paidCents != null ? `, less ${centsDollars(paidCents)} previous payments` : settledCents === 0 ? (input.priorPayments?.length ? ', previous payments $0.00' : ', no previous payments') : ''}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
+        `${label}: ${contractText} to date${retainedText != null ? `, less ${retainedText} retainage` : ''}${paidCents != null ? `, less ${money(paidCents)} previous payments` : settledCents === 0 ? (input.priorPayments?.length ? `, previous payments ${money(0)}` : ', no previous payments') : ''}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
         ...slackPoLines,
       ],
     };
   }
 
   const basis = paymentsExplainGap
-    ? `"${label}" is ${contractText}, and ${centsDollars(paidCents as number)} was already paid, which leaves the ${dueText} amount due${lineText}.`
-    : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. ${paidCents != null ? `The document prints ${centsDollars(paidCents)} in payments, which leaves ${centsDollars(contractCents - paidCents)}, not the amount due; check the payments against the PDF.` : 'The document prints no payments that account for the difference.'}`;
+    ? `"${label}" is ${contractText}, and ${money(paidCents as number)} was already paid, which leaves the ${dueText} amount due${lineText}.`
+    : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. ${paidCents != null ? `The document prints ${money(paidCents)} in payments, which leaves ${money(contractCents - paidCents)}, not the amount due; check the payments against the PDF.` : 'The document prints no payments that account for the difference.'}`;
   // payApplication is false past this point, so `selection` is what selectBalancePoLine returned, not selectPayApplicationPoLine's shape.
   const balanceSelection = selection as BalancePoSelection;
   // The selected PO line can be larger than the balance. For a line described as a final or remaining payment,
@@ -711,10 +719,10 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const overageLine = balanceSelection.status === 'matched' && !balanceSelection.exact ? balanceSelection.line : undefined;
   const overageLineCents = overageLine ? poLineAmountCents(overageLine) : undefined;
   const overageCents = overageLineCents != null ? overageLineCents - dueCents : 0;
-  const overageLineText = overageLine ? `the PO's "${printable(overageLine.description) || 'final payment'}" line (${centsDollars(overageLineCents as number)})` : '';
+  const overageLineText = overageLine ? `the PO's "${printable(overageLine.description) || 'final payment'}" line (${money(overageLineCents as number)})` : '';
   const overageDescribed = balanceSelection.status === 'matched' && balanceSelection.described;
   const overageNote = overageCents > 0
-    ? ` The invoice was booked for ${dueText} on ${overageLineText}, ${centsDollars(overageCents)} under that line${overageDescribed ? '; AP should follow up with the PO owner about the difference.' : '.'}`
+    ? ` The invoice was booked for ${dueText} on ${overageLineText}, ${money(overageCents)} under that line${overageDescribed ? '; AP should follow up with the PO owner about the difference.' : '.'}`
     : '';
   return {
     applied: true,
@@ -724,9 +732,9 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
     note: `${basis} The invoice bills the balance due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}${overageNote}`,
     amountDueNote: `remaining balance of ${contractText}`,
     slackLines: [
-      `${label}: ${contractText} contract total, ${dueText} due${paymentsExplainGap ? ` after ${centsDollars(paidCents as number)} paid` : paidCents != null ? ` (remaining balance per the email; the PDF prints ${centsDollars(paidCents)} in payments, which does not match, so check them)` : ' (remaining balance per the email)'}. Submitted as one balance line, not the printed lines.`,
+      `${label}: ${contractText} contract total, ${dueText} due${paymentsExplainGap ? ` after ${money(paidCents as number)} paid` : paidCents != null ? ` (remaining balance per the email; the PDF prints ${money(paidCents)} in payments, which does not match, so check them)` : ' (remaining balance per the email)'}. Submitted as one balance line, not the printed lines.`,
       ...slackPoLines,
-      ...(overageNote ? [`Booked ${dueText} on ${overageLineText}, ${centsDollars(overageCents)} under that line.`] : []),
+      ...(overageNote ? [`Booked ${dueText} on ${overageLineText}, ${money(overageCents)} under that line.`] : []),
     ],
   };
 }

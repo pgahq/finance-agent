@@ -46,6 +46,7 @@ const packet = (payeeName: string | null): ReimbursementPacket => ({
   formDate: '11/02/2026',
   expenseKind: 'hotel',
   purpose: 'Sample Marathon Team',
+  formCoding: null,
   evidence: ['Amount to Pay $1,000.00'],
 });
 
@@ -57,7 +58,8 @@ beforeEach(() => {
     Promise.resolve(CACHE.filter((doc) => includesAllWords(doc, words))));
 });
 
-const decide = (payeeName: string | null) => decideReimbursement(db as never, packet(payeeName), { defaultSupplierWid: 'wid-default' });
+const decide = (payeeName: string | null, emailContext?: { plainTextBody?: string }) =>
+  decideReimbursement(db as never, packet(payeeName), { defaultSupplierWid: 'wid-default', emailContext });
 
 describe('reimbursement payee lookup on a supplier cache', () => {
   it.each([
@@ -92,6 +94,67 @@ describe('reimbursement payee lookup on a supplier cache', () => {
     }
   });
 
+  it('books the Supplier ID an AP note names, instead of stopping on an ambiguous name, tagged as conversation-sourced', async () => {
+    CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
+    db.query.mockResolvedValueOnce([{ workday_id: 'wid-jordan-2', metadata: { supplierId: 'S-100011', supplierName: 'JORDAN REYES' } }]);
+    try {
+      const decision = await decide('Jordan Reyes', { plainTextBody: 'AP note: this payee is Supplier ID S-100011, not the other Jordan Reyes record.' });
+      expect(decision).toMatchObject({
+        outcome: 'apply',
+        reimbursement: { payee: { workdayId: 'wid-jordan-2', supplierId: 'S-100011', supplierName: 'JORDAN REYES', matchedBy: 'supplier_id_conversation' } },
+      });
+    } finally {
+      CACHE.pop();
+    }
+  });
+
+  it('still stops on an ambiguous name when the conversation names no Supplier ID', async () => {
+    CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
+    try {
+      const decision = await decide('Jordan Reyes', { plainTextBody: 'Please reimburse Jordan Reyes for the hotel.' });
+      expect(decision.outcome).toBe('manual_entry');
+    } finally {
+      CACHE.pop();
+    }
+  });
+
+  it('still books an unambiguous name match when the conversation happens to name an unrelated Supplier ID, and says so', async () => {
+    // The hotel's own Supplier ID shows up in the thread (e.g. quoted from a folio), but the payee name alone
+    // is unique in the cache, so the unrelated ID must not block the booking that would have happened anyway —
+    // AP should still see that it was named and not used, so it does not look missed.
+    db.query.mockResolvedValueOnce([{ workday_id: 'wid-avery-hotel', metadata: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } }]);
+    const decision = await decide('Avery Lindqvist', { plainTextBody: 'The hotel folio references Supplier ID S-100004 for billing.' });
+    expect(decision).toMatchObject({
+      outcome: 'apply',
+      reimbursement: { payee: { workdayId: 'wid-avery', matchedBy: 'name', conversationIdMismatch: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } } },
+    });
+  });
+
+  it('falls through to the ambiguous-name stop, not the mismatch wording, when the conversation names an unrelated ID, but still mentions the ID', async () => {
+    CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
+    db.query.mockResolvedValueOnce([{ workday_id: 'wid-avery-hotel', metadata: { supplierId: 'S-100004', supplierName: 'LINDQVIST HOTEL GROUP INC' } }]);
+    try {
+      const decision = await decide('Jordan Reyes', { plainTextBody: 'Use S-100004 for this payment.' });
+      expect(decision).toMatchObject({
+        outcome: 'manual_entry',
+        manual: { reason: expect.stringMatching(/no single supplier in the cache matches.*S-100004.*LINDQVIST HOTEL GROUP INC.*not Jordan Reyes.*not used/) },
+      });
+    } finally {
+      CACHE.pop();
+    }
+  });
+
+  it('does not guess when the conversation names more than one Supplier ID', async () => {
+    CACHE.push(supplier('wid-jordan-2', 'JORDAN REYES', 'S-100011'));
+    try {
+      const decision = await decide('Jordan Reyes', { plainTextBody: 'Use S-100011, or maybe S-100012 - please confirm which.' });
+      expect(decision.outcome).toBe('manual_entry');
+      expect(findDocuments).toHaveBeenCalled();
+    } finally {
+      CACHE.pop();
+    }
+  });
+
   it('sends a blank payee to manual entry', async () => {
     expect((await decide(null)).outcome).toBe('manual_entry');
     expect((await decide('  ')).outcome).toBe('manual_entry');
@@ -100,5 +163,11 @@ describe('reimbursement payee lookup on a supplier cache', () => {
   it('never returns the default supplier, even when its name is the payee name', async () => {
     const decision = await decide('General Vendor (Default)');
     expect(decision.outcome).toBe('manual_entry');
+  });
+
+  it('never returns the default supplier even when a conversation note names its Supplier ID', async () => {
+    db.query.mockResolvedValueOnce([{ workday_id: 'wid-default', metadata: { supplierId: 'S-100010', supplierName: 'GENERAL VENDOR (DEFAULT)' } }]);
+    const decision = await decide('General Vendor (Default)', { plainTextBody: 'Use S-100010 for this one.' });
+    expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('default supplier') } });
   });
 });

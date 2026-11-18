@@ -39,6 +39,7 @@ export const InvoiceOcrSchema = z.object({
   extractedInvoiceDate: printedText(enrichment.extractedInvoiceDate),
   extractedDueDate: printedText(enrichment.extractedDueDate),
   extractedAmountDue: printedText(enrichment.extractedAmountDue),
+  extractedCurrency: printedText(enrichment.extractedCurrency),
   extractedSuppliersInvoiceNumber: printedText(enrichment.extractedSuppliersInvoiceNumber),
   invoiceNumbersInDocument: z.array(z.string()).describe('The supplier invoice number of every separate invoice printed in the supplier invoice document, in document order, including the one in extractedSuppliersInvoiceNumber. Not numbers that an invoice only references (prior invoices, credited invoices, statement aging rows). Return an empty array when no invoice number is printed.'),
   extractedFreightAmount: printedText(enrichment.extractedFreightAmount),
@@ -308,6 +309,8 @@ Guidelines:
 ## Part 4: Amount Due
 
 Read the invoice attachment and extract the amount due or invoice total as it appears on the document. Populate \`extractedAmountDue\` with this value (e.g. "$8,573.40"). If no amount can be found, omit the field.
+
+Also populate \`extractedCurrency\` with the ISO 4217 code of the currency the invoice is billed in, only when the document clearly shows it: an explicit code or currency name beside the amounts, the totals, or the payment instructions ("EUR", "Euro", "Please remit in GBP"), or a symbol that names one currency (€, £) with no dollar context. Return the code as three capital letters. Leave it empty when the amounts print only a bare "$" with nothing else naming the currency (the invoice is then treated as US dollars), when the symbol is ambiguous ("¥" can be yen or yuan), and when the signals disagree (a "$" beside "EUR", or two different codes). A supplier address outside the United States is not enough on its own. For example, an invoice that prints "Total EUR 8.573,40" returns extractedCurrency "EUR", and an invoice that prints only "$8,573.40" returns an empty string. Never convert an amount between currencies; \`extractedAmountDue\` stays as printed.
 
 ---
 

@@ -78,13 +78,14 @@ import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValid
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
+import { detectInvoiceCurrency, formatCurrencyNotes, resolveInvoiceCurrency, type InvoiceCurrencyDecision } from './lib/invoice_currency.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { resolveCompanyFromEmail } from './lib/reference_ids.js';
 import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
 import { emailCodingText } from './lib/email_coding_text.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierAcceptedCurrencies, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 // Enrich has 300 seconds, so it reads again only when the first read was quick; a skipped second read costs a review note, a timeout costs the invoice.
@@ -266,6 +267,9 @@ async function processInvoice(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
+    const currencyAmountTexts = [result.extractedAmountDue, result.extractedFreightAmount, result.extractedTaxAmount];
+    const documentCurrency = detectInvoiceCurrency({ extractedCurrency: result.extractedCurrency, amountTexts: currencyAmountTexts }).code ?? undefined;
+    let currencyDecision: InvoiceCurrencyDecision | undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -463,6 +467,7 @@ async function processInvoice(
     const depositPlan = !submitsLines || chargeWithheld || freightAsLines || result.extractedRetainage != null
       ? undefined
       : planPartialPayment({
+        currency: documentCurrency,
         partialPayment: result.extractedPartialPayment,
         lineSubtotal: result.extractedLineSubtotal,
         amountDue: extractedAmountDue,
@@ -519,6 +524,7 @@ async function processInvoice(
     const balancePlan = !submitsLines || depositPlan || chargeWithheld || freightAsLines
       ? undefined
       : planBalanceInvoice({
+        currency: documentCurrency,
         priorPayments: result.extractedPriorPayments,
         retainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
@@ -679,14 +685,16 @@ async function processInvoice(
     const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
-      const invoiceNumberFallback = submissionFallbacks
-        .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
+      const currencyFellBack = submissionFallbacks.some((fallback) => fallback.field === 'currency');
+      const listedSubmissionFallbacks = submissionFallbacks
+        .filter((fallback) => fallback.field === 'suppliersInvoiceNumber' || fallback.field === 'currency')
         .map((fallback) => fallback.label);
       return baseNotes(submissionFallbacks)
         + formatAmountCheckNotes(mergeAmountCheckMessages(chargeCheck, merged.chargeReconciliationLabels ?? []))
         + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
+        + formatCurrencyNotes(currencyDecision, currencyFellBack)
         + formatFallbackNotes(merged)
-        + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
+        + (listedSubmissionFallbacks.length ? `\n\nFallback values applied: ${listedSubmissionFallbacks.join('; ')}` : '');
     };
 
     let fallbacks: Fallbacks;
@@ -705,9 +713,19 @@ async function processInvoice(
         invoice: detailedInvoice,
         ...(invoiceNumberOf(detailedInvoice) ? { workdayInvoiceNumber: invoiceNumberOf(detailedInvoice) } : {}),
       });
+      currencyDecision = await resolveInvoiceCurrency({
+        extractedCurrency: result.extractedCurrency,
+        amountTexts: currencyAmountTexts,
+        supplierWID: submitSupplierWID,
+        defaultSupplierWID: DEFAULT_SUPPLIER_WID,
+        existingInvoice: true,
+        lookupSupplierCurrencies: (wid) => getSupplierAcceptedCurrencies(context, wid),
+      });
       const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: submitSupplierWID,
+        ...(currencyDecision.currencyWID ? { currencyWID: currencyDecision.currencyWID } : {}),
+        ...(currencyDecision.fallbackLabel ? { currencyFallbackLabel: currencyDecision.fallbackLabel } : {}),
         buildNotes,
         memo,
         invoiceDate: extractedInvoiceDate,
