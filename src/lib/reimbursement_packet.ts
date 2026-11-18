@@ -825,6 +825,7 @@ export function reimbursementOcr(reimbursement: AppliedReimbursement): InvoiceOc
     extractedInvoiceDate: reimbursement.invoiceDate,
     extractedDueDate: null,
     extractedAmountDue: reimbursement.amountLabel,
+    extractedCurrency: null,
     extractedSuppliersInvoiceNumber: null,
     invoiceNumbersInDocument: null,
     extractedFreightAmount: null,

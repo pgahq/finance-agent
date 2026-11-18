@@ -452,6 +452,27 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"lineReview"');
   });
 
+  it('shows the submitted non-USD currency under Amount Due on create success, and the USD fallback under Fallbacks Applied', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-400001',
+      extracted: { amountDue: '€8,573.40', currency: 'EUR' },
+    });
+    let texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('• *Amount Due* → €8,573.40\n• *Currency* → EUR');
+
+    (global.fetch as jest.Mock).mockClear();
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-400002',
+      extracted: { amountDue: '€8,573.40' },
+      appliedFallbacks: ['fallback currency USD instead of EUR (the supplier does not accept EUR)'],
+    });
+    texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).not.toContain('*Currency*');
+    expect(texts).toContain('fallback currency USD instead of EUR (the supplier does not accept EUR)');
+  });
+
   it('shows the deposit under Amount Due and in its own section on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
