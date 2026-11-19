@@ -62,6 +62,8 @@ import {
 import {
   decideReimbursement,
   readReimbursementPacket,
+  reimbursementCodingLine,
+  reimbursementCodingNote,
   reimbursementNote,
   reimbursementSlackLines,
 } from './lib/reimbursement_packet.js';
@@ -97,8 +99,8 @@ import {
   withComposedLineDescriptions,
   type FinalInvoiceLine,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, placeChargesOnPoServiceLines, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { hasPrintedRetainage, reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -123,6 +125,7 @@ import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './
 import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
+  type EmailCompanyMatch,
 } from './lib/reference_ids.js';
 import {
   claimInvoiceCluster,
@@ -132,8 +135,10 @@ import {
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
+import { detectInvoiceCurrency, formatCurrencyNotes, resolveInvoiceCurrency, type InvoiceCurrencyDecision } from './lib/invoice_currency.js';
 import {
   formatPurchaseOrderLineFallbackNotes,
+  getSupplierAcceptedCurrencies,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
   isPurchaseOrderLineFallback,
@@ -981,7 +986,7 @@ async function processInvoiceCluster(
     const reimbursementDecision = await decideReimbursement(
       context.dbConnection,
       await readReimbursementPacket(processedAttachments, emailContext, abortSignal),
-      { defaultSupplierWid: DEFAULT_SUPPLIER_WID }
+      { defaultSupplierWid: DEFAULT_SUPPLIER_WID, emailContext }
     );
     if (reimbursementDecision.outcome === 'manual_entry') {
       debug('Reimbursement packet not booked', reimbursementDecision.manual);
@@ -1034,13 +1039,29 @@ async function processInvoiceCluster(
     const recommendedCompanyWID = result.companyVerification?.status === 'different'
       ? result.companyVerification.recommended?.workdayId ?? undefined
       : undefined;
-    const emailCompany = await resolveCompanyFromEmail({
+    // The email text and AP notes name the company first. Only when they name none does the coding line printed on a
+    // reimbursement form count as named coding, so a form company is verified like an emailed one and never trusted bare.
+    const reimbursementCodingLineText = reimbursement ? reimbursementCodingLine(reimbursement) : undefined;
+    const resolveEmailCompany = (formCodingLine?: string) => resolveCompanyFromEmail({
       db: context.dbConnection,
-      emailBody: emailContext?.plainTextBody,
-      codingText: emailCodingText(emailContext),
+      emailBody: [emailContext?.plainTextBody, formCodingLine].filter(Boolean).join('\n'),
+      codingText: [emailCodingText(emailContext), formCodingLine].filter(Boolean).join('\n'),
       apNotes: emailContext?.adminConversationParts,
       emailCompany: result.emailWorktags?.company,
     });
+    const emailNamedCompany = await resolveEmailCompany();
+    const formResolvedCompany = !emailNamedCompany && reimbursementCodingLineText
+      ? await resolveEmailCompany(reimbursementCodingLineText)
+      : undefined;
+    // The form's coding value is untyped, so a company it resolves to must be the one the matching model claimed from
+    // it; a company the cache happens to find for some other code on the line is never taken.
+    const claimedCompany = result.emailWorktags?.company;
+    const formNamedCompany: EmailCompanyMatch | undefined = formResolvedCompany
+      && ((formResolvedCompany.workdayId && formResolvedCompany.workdayId === claimedCompany?.workdayId)
+        || (formResolvedCompany.referenceId && formResolvedCompany.referenceId === claimedCompany?.referenceId))
+      ? { ...formResolvedCompany, origin: 'form' }
+      : undefined;
+    const emailCompany = emailNamedCompany ?? formNamedCompany;
 
     const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
       invoiceNumber: result.extractedSuppliersInvoiceNumber,
@@ -1111,10 +1132,29 @@ async function processInvoiceCluster(
       noteLineConflict: noteLine.conflict && Boolean(matchedPoLines?.length),
     });
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
+    // A reimbursement reads no supplier document, so its description is the only thing the memo can say.
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
-      description: result.supplier.extractedInformation?.memo,
+      description: reimbursement ? reimbursement.description : result.supplier.extractedInformation?.memo,
     });
+
+    // A bare "$" names no currency, so only a printed non-USD signal ever reaches Workday's Currency_Reference.
+    const documentCurrency = detectInvoiceCurrency({
+      extractedCurrency: result.extractedCurrency,
+      amountTexts: [result.extractedAmountDue, result.extractedFreightAmount, result.extractedTaxAmount],
+    }).code ?? undefined;
+    let currencyDecision: InvoiceCurrencyDecision | undefined;
+    const decideCurrency = async (supplierWID: string | undefined, existingInvoice: boolean) => {
+      currencyDecision = await resolveInvoiceCurrency({
+        extractedCurrency: result.extractedCurrency,
+        amountTexts: [result.extractedAmountDue, result.extractedFreightAmount, result.extractedTaxAmount],
+        supplierWID,
+        defaultSupplierWID: DEFAULT_SUPPLIER_WID,
+        existingInvoice,
+        lookupSupplierCurrencies: (wid) => getSupplierAcceptedCurrencies(context, wid),
+      });
+      return currencyDecision;
+    };
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}, submitSupplierWID=${submitSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
@@ -1124,24 +1164,39 @@ async function processInvoiceCluster(
     if (freeRows.length) debug(`Free rows left off: ${freeRowsNote(freeRows)}`);
     // A row or printed charge that names a PO service line (delivery, pickup, a surcharge) is billed on that line
     // instead of being folded into header freight or tax.
-    const placedCharges = placeChargesOnPoServiceLines({
+    // Payroll or employment tax is not sales or use tax, so it stays an invoice line instead of joining header tax.
+    const payrollTaxCharges = placePayrollTaxCharges({
       lines: extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost)),
+      // Classify from every printed row, including one removeFreeRows or the amount filter above dropped: a
+      // free or unpriced payroll category (`Wages $0.00`) still signals a payroll recharge for its Taxes row.
+      classificationLines: result.extractedInvoiceLines ?? [],
       otherCharges: result.extractedOtherCharges,
+      tax: result.extractedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      poLines,
+    });
+    if (payrollTaxCharges.message) debug(payrollTaxCharges.message);
+    const placedCharges = placeChargesOnPoServiceLines({
+      lines: payrollTaxCharges.lines,
+      otherCharges: payrollTaxCharges.otherCharges,
       freightAmount: result.extractedFreightAmount,
       freightLabel: result.extractedFreightLabel,
       taxAmount: result.extractedTaxAmount,
       poLines: poClosedForInvoicing ? undefined : poLines,
+      // Payroll or employment tax is coded like its sibling rows: never pinned to a PO service line, even a
+      // long label (`Employer Payroll Taxes`) that would otherwise satisfy the matcher's length guard.
+      excludeFromMatching: line => isPayrollTaxCharge(line.description, { lines: result.extractedInvoiceLines ?? payrollTaxCharges.lines, poLines }),
     });
     if (placedCharges.placed.length) debug('Placed on PO service lines', placedCharges.placed);
     const printedLines = placedCharges.lines;
-    const printedRowCount = extractedRows.length + placedCharges.addedLines;
+    const printedRowCount = extractedRows.length + payrollTaxCharges.addedLines + placedCharges.addedLines;
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
       extractedFreightAmount: resolvedFreightAmount,
-      extractedTaxAmount: resolvedTaxAmount,
+      extractedTaxAmount: resolvedHeaderTaxAmount,
       freightCleared: headerFreightCleared,
-      taxCleared: headerTaxCleared,
+      taxCleared: resolvedHeaderTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
     } = resolveHeaderChargeAmounts({
@@ -1151,6 +1206,10 @@ async function processInvoiceCluster(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: splitFreightLines(printedLines).freightAmountFromLines,
     });
+    // The main Tax_Amount field itself can be a misread payroll tax (placePayrollTaxCharges already moved it onto
+    // the lines above); clear it here too so it never reaches header tax, the same as a printed $0.00 would.
+    const headerTaxCleared = resolvedHeaderTaxCleared || payrollTaxCharges.taxCleared === true;
+    const resolvedTaxAmount = headerTaxCleared ? undefined : resolvedHeaderTaxAmount;
     // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
     // line total that is not quantity x unit price may have a misread total; each is read that way only when
     // that is what makes the lines match the amount due.
@@ -1168,6 +1227,7 @@ async function processInvoiceCluster(
       settlementPrinted: hasPrintedSettlement({
         extractedPartialPayment: result.extractedPartialPayment,
         extractedPriorPayments: result.extractedPriorPayments,
+        extractedRetainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
       }),
       lineSubtotal: result.extractedLineSubtotal,
@@ -1189,6 +1249,7 @@ async function processInvoiceCluster(
       taxLabel: result.extractedTaxLabel,
       taxCleared: headerTaxCleared,
       chargeWithheld,
+      poLines,
     });
     const { taxAmount: extractedTaxAmount, taxCleared } = taxCharges;
     const charges = prepareInvoiceCharges(
@@ -1199,15 +1260,18 @@ async function processInvoiceCluster(
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(payrollTaxCharges.message ? [payrollTaxCharges.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...chargeReconciliationMessages(chargeReconciliation),
     ];
     if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
     const extractedCandidateLines = withComposedLineDescriptions(charges.lines);
     // A deposit invoice bills a printed amount smaller than its contract total, so one deposit line replaces the lines.
-    const depositPlan = chargeWithheld || freightAsLines
+    // A document that prints retainage is a pay application, so the balance plan reconciles it (or flags unreadable figures), not the deposit plan.
+    const depositPlan = chargeWithheld || freightAsLines || result.extractedRetainage != null
       ? undefined
       : planPartialPayment({
+        currency: documentCurrency,
         partialPayment: result.extractedPartialPayment,
         lineSubtotal: result.extractedLineSubtotal,
         amountDue: extractedAmountDue,
@@ -1238,7 +1302,7 @@ async function processInvoiceCluster(
     // The amount due is the better judge of missing rows when the printed total covers only part of the table, but
     // it says nothing on an invoice that bills a deposit, an advance, or what is left after payments.
     const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
-    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length || hasPrintedRetainage(result.extractedRetainage)
       ? undefined
       : reviewAmountDueGapCents({
         lines: charges.lines,
@@ -1284,7 +1348,9 @@ async function processInvoiceCluster(
     const balancePlan = depositPlan || chargeWithheld || freightAsLines
       ? undefined
       : planBalanceInvoice({
+        currency: documentCurrency,
         priorPayments: result.extractedPriorPayments,
+        retainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
         lineSubtotal: result.extractedLineSubtotal,
         amountDue: extractedAmountDue,
@@ -1533,7 +1599,11 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const reimbursementCodingText = reimbursement
+      ? reimbursementCodingNote(reimbursement, { companyFromForm: Boolean(formNamedCompany), defaultCompany: usedDefaultCompany })
+      : '';
+    const reimbursementCodingNotes = reimbursementCodingText ? `\n\n${reimbursementCodingText}` : '';
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + reimbursementCodingNotes + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1546,6 +1616,7 @@ async function processInvoiceCluster(
         : {};
     };
     const isDueDateFallback = (f: AppliedFallback) => f.field === 'dueDate';
+    const isCurrencyFallback = (f: AppliedFallback) => f.field === 'currency';
     const isListedInNotes = (f: AppliedFallback) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f) && !isDueDateFallback(f);
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
@@ -1562,6 +1633,7 @@ async function processInvoiceCluster(
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
         + formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber)
+        + formatCurrencyNotes(currencyDecision, appliedFallbacks.some(isCurrencyFallback))
         + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
@@ -1803,11 +1875,16 @@ async function processInvoiceCluster(
           return `${baseNotes(appliedFallbacks)}${formatAmountCheckNotes(amountCheckLines(appliedFallbacks))}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
             formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
+            formatCurrencyNotes(currencyDecision, appliedFallbacks.some(isCurrencyFallback)) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
+        const updateSupplierWID = purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID;
+        const updateCurrency = await decideCurrency(updateSupplierWID, true);
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
-          supplierWID: purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
+          supplierWID: updateSupplierWID,
+          ...(updateCurrency.currencyWID ? { currencyWID: updateCurrency.currencyWID } : {}),
+          ...(updateCurrency.fallbackLabel ? { currencyFallbackLabel: updateCurrency.fallbackLabel } : {}),
           buildNotes: buildUpdateNotes,
           memo,
           invoiceDate: extractedInvoiceDate,
@@ -1862,6 +1939,7 @@ async function processInvoiceCluster(
             suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
             ...(updateOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
             ...(updateOutcome.appliedFallbacks.some(isDueDateFallback) ? { dueDateNotApplied: true } : {}),
+            ...(updateCurrency.currencyWID && updateCurrency.currencyWID !== 'USD' && !updateOutcome.appliedFallbacks.some(isCurrencyFallback) ? { currency: updateCurrency.currencyWID } : {}),
           },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
@@ -1881,10 +1959,13 @@ async function processInvoiceCluster(
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
+    const createCurrency = await decideCurrency(submitSupplierWID, false);
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: submitSupplierWID,
       companyWID,
       companyReferenceType,
+      ...(createCurrency.currencyWID ? { currencyWID: createCurrency.currencyWID } : {}),
+      ...(createCurrency.fallbackLabel ? { currencyFallbackLabel: createCurrency.fallbackLabel } : {}),
       buildNotes: (appliedFallbacks) =>
         buildNotes(appliedFallbacks) +
         (replacedInvoiceLabel ? `\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.` : ''),
@@ -1954,6 +2035,7 @@ async function processInvoiceCluster(
         suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
         ...(createOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
         ...(createOutcome.appliedFallbacks.some(isDueDateFallback) ? { dueDateNotApplied: true } : {}),
+        ...(createCurrency.currencyWID && createCurrency.currencyWID !== 'USD' && !createOutcome.appliedFallbacks.some(isCurrencyFallback) ? { currency: createCurrency.currencyWID } : {}),
       },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,

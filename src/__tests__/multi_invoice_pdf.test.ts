@@ -59,6 +59,7 @@ function ocrResponseFor(numbers: string[], amountDue: string, poNumber: string):
     extractedInvoiceDate: '2026-03-03',
     extractedDueDate: '',
     extractedAmountDue: amountDue,
+    extractedCurrency: '',
     extractedSuppliersInvoiceNumber: numbers[0],
     invoiceNumbersInDocument: numbers,
     extractedFreightAmount: '',

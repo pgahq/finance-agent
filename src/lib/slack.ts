@@ -226,7 +226,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (company?.appliedName) {
     const emailSource = company.emailOrigin === 'name'
       ? 'named in email'
-      : `from email coding${company.appliedReferenceId ? ` \`${company.appliedReferenceId}\`` : ''}`;
+      : company.emailOrigin === 'form'
+        ? `from the reimbursement form's coding${company.appliedReferenceId ? ` \`${company.appliedReferenceId}\`` : ''}`
+        : `from email coding${company.appliedReferenceId ? ` \`${company.appliedReferenceId}\`` : ''}`;
     const from = company.appliedFrom === 'recommended' ? 'from invoice bill-to'
       : company.appliedFrom === 'po' ? 'from PO'
       : company.appliedFrom === 'email' ? emailSource
@@ -242,6 +244,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     dueDateNotApplied?: boolean;
     amountDue?: string;
     amountDueNote?: string;
+    /** A non-USD currency submitted as Currency_Reference; absent for USD and for a fallback to USD. */
+    currency?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     taxAmount?: string;
@@ -258,6 +262,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
   if (extracted?.dueDate) changeLines.push(dueDateChangeLine(extracted.dueDate, extracted.dueDateNotApplied));
   if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}${extracted.amountDueNote ? ` (${extracted.amountDueNote})` : ''}`);
+  if (extracted?.currency) changeLines.push(`*Currency* → ${escapeSlackMrkdwn(extracted.currency)}`);
   if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
   if (extracted?.freightCleared) changeLines.push('*Freight* → none');
   else if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
@@ -837,7 +842,7 @@ export interface EnrichmentNotification {
     existingName?: string;
     recommendedName?: string;
     appliedFromEmail?: boolean;
-    emailOrigin?: 'code' | 'name';
+    emailOrigin?: 'code' | 'name' | 'form';
     review?: string;
     appliedName?: string;
     appliedReferenceId?: string;
@@ -930,7 +935,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   if (company?.appliedFromEmail) {
     const label = company.appliedName ?? company.appliedReferenceId ?? 'Unknown';
     const code = company.appliedReferenceId ? ` (\`${company.appliedReferenceId}\`)` : '';
-    changeLines.push(`*Company* → ${label}${code} ${company.emailOrigin === 'name' ? 'named in email' : 'from email coding'}`);
+    changeLines.push(`*Company* → ${label}${code} ${company.emailOrigin === 'name' ? 'named in email' : company.emailOrigin === 'form' ? "from the reimbursement form's coding" : 'from email coding'}`);
     if (company.review) fallbackLines.push(escapeSlackMrkdwn(company.review));
   } else {
     switch (company?.status) {

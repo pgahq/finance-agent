@@ -1,5 +1,6 @@
 import {
   amountDueGapCents,
+  hasPrintedRetainage,
   amountDueShortfallCents,
   formatLineSubtotalNotes,
   formatPartialPaymentNotes,
@@ -28,6 +29,7 @@ import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin
 import { summaryCreditCents } from '../lib/header_charges.js';
 import { supin472108Header, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import { supin474922Header, supin474922Payments, supin474922PrintedHeader, supin474922PrintedRetainage, supin474922Retainage, supin474922Rows } from './fixtures/supin_474922.js';
 import {
   remainingBalanceAmbiguousPoLines,
   remainingBalanceFinalPaymentPoLine,
@@ -940,10 +942,583 @@ describe('planBalanceInvoice', () => {
   });
 });
 
+describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', () => {
+  // The PDF prints Total Completed and Stored to Date $551,250.00 (90% of the $612,500.00 contract), Total retainage $0.00,
+  // previous certificates $367,500.00, current payment due $183,750.00, and a $61,250.00 Balance to Finish.
+  const printed = (overrides: Partial<BalanceInvoiceInput> = {}): BalanceInvoiceInput => ({
+    priorPayments: supin474922Payments,
+    retainage: supin474922PrintedRetainage,
+    emailBalanceDue: null,
+    lineSubtotal: supin474922PrintedHeader.extractedLineSubtotal,
+    amountDue: '$183,750.00',
+    lines: supin474922Rows,
+    poLines: undefined,
+    ...overrides,
+  });
+  const poLine = (id: string, amount: number) => ({ lineOrder: 1, purchaseOrderLineId: id, quantity: 1, unitCost: amount, extendedAmount: amount }) as any;
+
+  it('books $183,750.00 from the completed-to-date total, with no retainage held back', () => {
+    const plan = planBalanceInvoice(printed())!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.line).toMatchObject({ quantity: 1, totalPrice: '$183,750.00' });
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $551,250.00, less "Total retainage" $0.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due');
+  });
+
+  it('pins the single PO line for the $612,500.00 contract even though the base is the completed total', () => {
+    const contractLine = poLine('L1', 612500);
+    const plan = planBalanceInvoice(printed({ poLines: [contractLine] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toEqual([contractLine]);
+  });
+
+  it('books the same when the model lists no $0.00 retainage row, and pins the contract-sum PO line', () => {
+    const contractLine = poLine('L1', 612500);
+    const plan = planBalanceInvoice(printed({ retainage: null, poLines: [contractLine] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.poLines).toEqual([contractLine]);
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $551,250.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due');
+    expect(plan.slackLines[0]).toBe('Total Completed and Stored to Date: $551,250.00 to date, less $367,500.00 previous payments, $183,750.00 current payment due. Submitted as one pay-application line, not the printed lines.');
+  });
+
+  it('keeps the plain balance rule for other subtotal labels, with two PO lines that neither match', () => {
+    // Two lines, neither an exact match nor described as a final/remaining payment: the generic balance rule's
+    // sole-line fallback (#271) does not apply here either, so this still leaves the PO line unmatched.
+    const plan = planBalanceInvoice(printed({ retainage: null, lineSubtotal: { label: 'Subtotal', amount: '$551,250.00' }, poLines: [poLine('L1', 612500), poLine('L2', 900000)] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
+  it('books a plain balance invoice on its only PO line under the remaining-balance rule, not the pay-application rule', () => {
+    // Not a pay application (the subtotal label is "Subtotal", not completed-to-date), so this goes through
+    // #271's selectBalancePoLine, whose sole-line fallback books the PO's only line even though nothing describes
+    // it as a final or remaining payment, because payments reconcile the contract total to the amount due.
+    const line = poLine('L1', 612500);
+    const plan = planBalanceInvoice(printed({ retainage: null, lineSubtotal: { label: 'Subtotal', amount: '$551,250.00' }, poLines: [line] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Balance invoice');
+    expect(plan.poLines).toEqual([line]);
+  });
+
+  it('leaves the PO line to the merge, naming the base, when a several-line PO has a $612,500.00 line', () => {
+    const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 612500), poLine('L2', 12000)] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.note).toContain('No PO line is for $183,750.00, and no open PO line can be picked for the $551,250.00 total to date (an only line must cover it), so the PO line was left to the line merge; check the PO line coding before approving.');
+  });
+
+  it('is what the old contract-sum base got wrong: $612,500.00 less payments is $245,000.00, not the amount due', () => {
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'REPORT TOTALS', amount: '$612,500.00' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('$612,500.00 contract total less $0.00 retainage and $367,500.00 in previous payments is $245,000.00');
+  });
+
+  it('books a first application, which prints no previous certificates, at the current payment due', () => {
+    const first = { retainage: null, lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$183,750.00' } };
+    const plan = planBalanceInvoice(printed({ ...first, priorPayments: [] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line!.totalPrice).toBe('$183,750.00');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $183,750.00 and no previous payments are printed, which leaves the $183,750.00 current payment due');
+    expect(plan.slackLines[0]).toContain('$183,750.00 to date, no previous payments, $183,750.00 current payment due');
+    const zero = planBalanceInvoice(printed({ ...first, priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }] }))!;
+    expect(zero.applied).toBe(true);
+    expect(zero.note).toContain('and the printed previous payments total $0.00, which leaves');
+    expect(zero.slackLines[0]).toContain('previous payments $0.00');
+    expect(planBalanceInvoice(printed({ ...first, priorPayments: supin474922Payments }))).toBeUndefined();
+  });
+
+  it('says no previous payments were read when the completed total is above the due and none were returned', () => {
+    const plan = planBalanceInvoice(printed({ retainage: null, priorPayments: [] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('the work completed to date $551,250.00 is not the current payment due $183,750.00, and no previous payments were read');
+  });
+
+  it('warns when a previous payment amount cannot be read', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+  });
+
+  it('does not book an unrelated payment row that fails to reconcile', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less deposit paid', amount: '$50,000.00' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+  });
+
+  it('keeps the plain remaining-balance rule for a subtotal that is not a completed-to-date total', () => {
+    const plan = planBalanceInvoice(printed({ retainage: null, lineSubtotal: { label: 'Completed and Stored Materials', amount: '$551,250.00' } }))!;
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
+  it('does not treat the $61,250.00 Balance to Finish as retainage', () => {
+    expect(61250).toBeCloseTo(612500 - 551250, 2);
+    const plan = planBalanceInvoice(printed({ retainage: { label: 'Balance to Finish, including retainage', percent: null, amount: '$61,250.00' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the printed row "Balance to Finish, including retainage" is not labeled as retainage held');
+  });
+});
+
+describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)', () => {
+  const payAppInput = (overrides: Partial<BalanceInvoiceInput> = {}): BalanceInvoiceInput => ({
+    priorPayments: supin474922Payments,
+    retainage: supin474922Retainage,
+    emailBalanceDue: null,
+    lineSubtotal: supin474922Header.extractedLineSubtotal,
+    amountDue: supin474922Header.extractedAmountDue,
+    lines: supin474922Rows,
+    poLines: undefined,
+    ...overrides,
+  });
+  const poLine = (id: string, amount: number, extra: Record<string, unknown> = {}) => ({ lineOrder: 1, purchaseOrderLineId: id, quantity: 1, unitCost: amount, extendedAmount: amount, ...extra }) as any;
+
+  it('has contract sum, retainage, and previous certificates that reconcile to the current payment due', () => {
+    expect(61250).toBeCloseTo(612500 * 0.1, 2);
+    expect(612500.0 - 61250 - 367500).toBeCloseTo(183750, 2);
+  });
+
+  it('books one line at the current payment due with the breakdown note', () => {
+    const plan = planBalanceInvoice(payAppInput())!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.line).toEqual({
+      description: 'Pay application - current payment due (Contract Sum to Date $612,500.00)',
+      quantity: 1,
+      unitCost: '$183,750.00',
+      totalPrice: '$183,750.00',
+      hasDiscount: null,
+      tableNumber: 1,
+    });
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.note).toContain('"Contract Sum to Date" is $612,500.00, less "Retainage" (10%) $61,250.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due (1 printed line).');
+    expect(plan.note).toContain('submitted as one $183,750.00 line instead of the printed lines');
+    expect(plan.amountDueNote).toBe('pay application, $612,500.00 to date');
+    expect(plan.slackLines).toEqual(['Contract Sum to Date: $612,500.00 to date, less $61,250.00 retainage, less $367,500.00 previous payments, $183,750.00 current payment due. Submitted as one pay-application line, not the printed lines.']);
+  });
+
+  it('does not apply the incident reading, where the retainage was not extracted', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: null }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Balance invoice');
+    expect(plan.line).toBeUndefined();
+    expect(plan.note).toContain('the printed payments total $367,500.00, which leaves $245,000.00 of the $612,500.00 contract total, not the amount due $183,750.00');
+  });
+
+  it('applies a first pay application that has retainage and no previous certificates', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: null, amountDue: '$551,250.00' }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('"Contract Sum to Date" is $612,500.00, less "Retainage" (10%) $61,250.00, which leaves the $551,250.00 current payment due');
+    expect(plan.slackLines[0]).toBe('Contract Sum to Date: $612,500.00 to date, less $61,250.00 retainage, $551,250.00 current payment due. Submitted as one pay-application line, not the printed lines.');
+  });
+
+  it('reads retainage printed in parentheses or without a percent', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { label: 'Less Retainage', percent: null, amount: '($61,250.00)' } }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('after "Less Retainage" $61,250.00');
+  });
+
+  it('does not apply and shows the arithmetic when the figures do not reconcile', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, amount: '$61,250.01' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.line).toBeUndefined();
+    expect(plan.note).toBe('This looks like a construction pay application, but the $612,500.00 contract total less $61,250.01 retainage and $367,500.00 in previous payments is $183,749.99, not the current payment due $183,750.00, so the printed lines were submitted unchanged. The submitted lines may not match the current payment due; check before approving.');
+    expect(plan.slackLines).toEqual(['Pay application not applied: the $612,500.00 contract total less $61,250.01 retainage and $367,500.00 in previous payments is $183,749.99, not the current payment due $183,750.00.']);
+  });
+
+  it('does not apply when a printed amount is off by the retainage alone', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: null }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the $612,500.00 contract total less $61,250.00 retainage is $551,250.00, not the current payment due $183,750.00');
+  });
+
+  it('applies but mentions a printed percent that does not match the retainage amount', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, percent: '5%' } }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('5% of $612,500.00 is $30,625.00, not the printed retainage $61,250.00; check the retainage against the PDF.');
+  });
+
+  it.each([['TBD'], ['see attached'], ['--']])('does not apply and names the unreadable retainage %s', (amount) => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, amount } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.line).toBeUndefined();
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain(`the printed retainage "${amount}" is not a readable amount, so the figures cannot be checked, so the printed lines were submitted unchanged`);
+    expect(plan.slackLines).toEqual([`Pay application not applied: the printed retainage "${amount}" is not a readable amount, so the figures cannot be checked.`]);
+  });
+
+  it.each([['Tax'], [''], ['Retainage Release'], ['Less Retainage Released']])('does not apply when the retainage row is labeled "%s"', (label) => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.line).toBeUndefined();
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain(`the printed row "${label}" is not labeled as retainage held, so the figures cannot be checked`);
+  });
+
+  it.each([['Retainage'], ['Less 10% Retainage'], ['Retention'], ['Less Retention Held'], ['Retainage Held']])('accepts the retainage label "%s"', (label) => {
+    expect(planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label } }))!.applied).toBe(true);
+  });
+
+  it('does not apply when the document prints no contract sum or completed-to-date total, which a line sum cannot stand in for', () => {
+    const plan = planBalanceInvoice(payAppInput({ lineSubtotal: null }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the document prints no contract sum or completed-to-date total to reconcile the figures against');
+  });
+
+  it.each(['TBD 61,250.00', 'see attached 61250.00', '10% 61,250.00'])('does not apply when the retainage "%s" only contains digits', (amount) => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, amount } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('is not a readable amount');
+  });
+
+  it('does not apply when a previous payment only contains digits', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD 367,500.00' }] }))!;
+    expect(plan.applied).toBe(false);
+  });
+
+  it('counts a $0.00 previous payment row as none and still sums the other rows', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Prior', amount: '$0.00' }, ...supin474922Payments] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.totalPrice).toBe('$183,750.00');
+  });
+
+  it('words a no-retainage mismatch by the work completed to date, without mentioning retainage', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: null, lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$551,250.00' }, priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$367,500.01' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('This looks like a construction pay application, but the work completed to date $551,250.00 less $367,500.01 in previous payments is $183,749.99, not the current payment due $183,750.00');
+    expect(plan.note).not.toContain('retainage');
+  });
+
+  it('keeps the plain-invoice rule that a $0.00 payment row makes the payments unreadable', () => {
+    const plain = { lineSubtotal: { label: 'Total Contract Price', amount: '$23,887.00' }, amountDue: '$23,387.00', priorPayments: [{ label: 'Prior', amount: '$0.00' }, { label: 'Payments Received', amount: '$500.00' }] };
+    expect(planBalanceInvoice(payAppInput({ retainage: null, lines: [], poLines: undefined, ...plain }))).toBeUndefined();
+  });
+
+  it('leaves the PO line to the merge when the only line cannot cover the contract total billed to date', () => {
+    for (const amount of [100000, 300000, 612499.99]) {
+      const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', amount)] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('check the PO line coding before approving');
+    }
+  });
+
+  it('pins an only line that covers the contract total billed to date', () => {
+    const line = poLine('L1', 700000);
+    expect(planBalanceInvoice(payAppInput({ poLines: [line] }))!.poLines).toEqual([line]);
+  });
+
+  it('does not review the line subtotal against rows when the subtotal is a completed-to-date total', () => {
+    expect(lineSubtotalReviewNote(supin474922Rows, { label: 'Total Completed and Stored to Date', amount: '$551,250.00' })).toBeUndefined();
+  });
+
+  it('does not take a "Customer Retention Services" row for retainage held', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label: 'Customer Retention Services' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('is not labeled as retainage held');
+  });
+
+  it('does not apply when a printed previous payment is not a readable amount', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('a printed previous payment is not a readable amount, so the figures cannot be checked');
+  });
+
+  it('treats a printed $0.00 previous payment as none on a first pay application', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }],
+      amountDue: '$551,250.00',
+    }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('less "Retainage" (10%) $61,250.00, which leaves the $551,250.00 current payment due');
+  });
+
+  it('still reconciles a printed $0.00 retainage against the contract total', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, percent: null, amount: '$0.00' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('$612,500.00 contract total less $0.00 retainage and $367,500.00 in previous payments is $245,000.00');
+  });
+
+  it('books without a PO link when the PO has no lines', () => {
+    const none = planBalanceInvoice(payAppInput({ poLines: [] as any[] }))!;
+    expect(none.applied).toBe(true);
+    expect(none.noteLabel).toBe('Pay application');
+  });
+
+  it('is silent when the lines or contract total do not exceed the amount due', () => {
+    expect(planBalanceInvoice(payAppInput({ amountDue: '$612,500.00' }))).toBeUndefined();
+    expect(planBalanceInvoice(payAppInput({ amountDue: null }))).toBeUndefined();
+  });
+
+  it('does not apply when tax or freight is also printed', () => {
+    for (const charges of [{ taxAmount: '$100.00' }, { freightAmount: '$50.00' }]) {
+      const plan = planBalanceInvoice(payAppInput(charges))!;
+      expect(plan.applied).toBe(false);
+      expect(plan.note).toContain('pay applications with header charges are not booked automatically');
+    }
+  });
+
+  it('does not let an email balance book a pay application whose figures do not reconcile', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      retainage: { ...supin474922Retainage, amount: '$50,000.00' },
+      emailBalanceDue: { amount: '$183,750.00', phrase: 'remaining balance' },
+    }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('is $195,000.00, not the current payment due $183,750.00');
+    expect(plan.note).toContain('so the printed lines were submitted unchanged');
+  });
+
+  it('books from the Total Completed and Stored to Date label and shows it in the line and note', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$612,500.00' },
+      emailBalanceDue: null,
+    }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.description).toBe('Pay application - current payment due (Total Completed and Stored to Date $612,500.00)');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $612,500.00, less "Retainage" (10%) $61,250.00');
+  });
+
+  it('flags the contract sum as the base when the completed work is smaller', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      lineSubtotal: { label: 'Contract Sum to Date', amount: '$700,000.00' },
+      emailBalanceDue: null,
+    }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the $700,000.00 contract total less $61,250.00 retainage and $367,500.00 in previous payments is $271,250.00, not the current payment due $183,750.00');
+  });
+
+  it('reports a percent mismatch when the arithmetic reconciles', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, percent: '5%' } }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('5% of $612,500.00 is $30,625.00, not the printed retainage $61,250.00');
+  });
+
+  describe('with a PO', () => {
+    it('pins the one open PO line for the contract sum to date', () => {
+      const contractLine = poLine('L1', 612500);
+      const plan = planBalanceInvoice(payAppInput({ poLines: [contractLine, poLine('L2', 12000)] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([contractLine]);
+      expect(plan.note).not.toContain('PO line');
+    });
+
+    it('pins a PO line that equals the current payment due first', () => {
+      const dueLine = poLine('L2', 183750);
+      const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 612500), dueLine] }))!;
+      expect(plan.poLines).toEqual([dueLine]);
+    });
+
+    it('pins the only PO line whatever its amount', () => {
+      const only = poLine('L1', 700000);
+      const plan = planBalanceInvoice(payAppInput({ poLines: [only] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([only]);
+    });
+
+    it('warns when the only PO line is already fully invoiced', () => {
+      const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 612500, { availableForInvoicing: false })] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.note).toContain('The PO line for this pay application is already fully invoiced or closed; check whether this pay application was billed before approving.');
+      expect(plan.slackLines).toHaveLength(2);
+    });
+
+    it('leaves the line unpinned for the merge, and says so, when several PO lines could fit', () => {
+      const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 300000), poLine('L2', 291532)] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('No PO line is for $183,750.00, and no open PO line can be picked for the $612,500.00 total to date (an only line must cover it), so the PO line was left to the line merge; check the PO line coding before approving.');
+      expect(plan.slackLines).toHaveLength(2);
+    });
+  });
+});
+
+describe('hasPrintedRetainage', () => {
+  it.each([
+    [{ label: 'Retainage', percent: '10%', amount: '$61,250.00' }, true],
+    [{ label: 'Less Retention Held', percent: null, amount: '($61,250.00)' }, true],
+    [{ label: 'Retainage', percent: null, amount: 'TBD' }, false],
+    [{ label: 'Retainage', percent: null, amount: '$0.00' }, true],
+    [{ label: 'Tax', percent: null, amount: '$61,250.00' }, false],
+    [{ label: 'Retainage Release', percent: null, amount: '$61,250.00' }, false],
+    [null, false],
+    [undefined, false],
+  ])('reads %j as %s', (retainage, expected) => {
+    expect(hasPrintedRetainage(retainage as any)).toBe(expected);
+  });
+});
+
+describe('amountDueGapCents with retainage', () => {
+  it('is not a meaningful check on a pay application', () => {
+    expect(amountDueGapCents({ lines: supin474922Rows, amountDue: '$183,750.00', retainage: supin474922Retainage })).toBeUndefined();
+  });
+
+  it('still checks the gap when the retainage row is unreadable or not a retainage row', () => {
+    expect(amountDueGapCents({ lines: supin474922Rows, amountDue: '$183,750.00', retainage: { ...supin474922Retainage, amount: 'TBD' } })).toBe(183750 * 100 - 612500 * 100);
+  });
+});
+
 describe('formatPartialPaymentNotes label', () => {
   it('defaults to the deposit label and takes a balance label', () => {
     expect(formatPartialPaymentNotes('Text.')).toContain('Deposit invoice: Text.');
     expect(formatPartialPaymentNotes('Text.', 'Balance invoice')).toContain('Balance invoice: Text.');
     expect(formatPartialPaymentNotes(undefined, 'Balance invoice')).toBe('');
+  });
+});
+
+describe('non-USD documents (fictional euro figures)', () => {
+  const euroRow = (description: string, amount: string) => ({
+    description, descriptionCells: null, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1, sectionLabel: null,
+  });
+
+  const depositInput = (overrides: Partial<PartialPaymentInput> = {}): PartialPaymentInput => ({
+    currency: 'EUR',
+    partialPayment: { label: 'Deposit Due', percent: '40%', amount: '€4,000.00' },
+    lineSubtotal: { label: 'Total Contract Price', amount: '€10,000.00' },
+    amountDue: '€4,000.00',
+    lines: [euroRow('Hospitality tent rental', '€10,000.00')],
+    poLines: undefined,
+    ...overrides,
+  });
+
+  it('writes the deposit line description, note, and Slack lines with the euro symbol', () => {
+    const plan = planPartialPayment(depositInput())!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.description).toBe('Deposit Due (40% of €10,000.00)');
+    expect(plan.amountDueNote).toBe('40% deposit of €10,000.00');
+    expect(plan.note).toContain('"Deposit Due" €4,000.00 is 40% of €10,000.00');
+    expect(plan.note).toContain('submitted as one €4,000.00 line');
+    expect(plan.slackLines).toEqual(['Deposit Due: €4,000.00 is 40% of €10,000.00. Submitted as one deposit line, not the printed lines.']);
+    expect(plan.note).not.toContain('$');
+  });
+
+  it('keeps the submitted line amount in the plain format the line parsers read', () => {
+    const plan = planPartialPayment(depositInput())!;
+
+    expect(plan.line?.unitCost).toBe('$4,000.00');
+    expect(plan.line?.totalPrice).toBe('$4,000.00');
+  });
+
+  it('names the currency in a deposit that is not applied', () => {
+    const plan = planPartialPayment(depositInput({ partialPayment: { label: 'Deposit Due', percent: '40%', amount: '€3,000.00' }, amountDue: '€3,000.00' }))!;
+
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('40% of €10,000.00 is €4,000.00, not the printed €3,000.00');
+  });
+
+  it('names the currency in the PO line reasons', () => {
+    const plan = planPartialPayment(depositInput({ poLines: [{ lineOrder: 1, description: 'Other', extendedAmount: 7000, availableForInvoicing: true } as any] }))!;
+
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('no PO line is for €4,000.00');
+  });
+
+  it('still shows dollars when no currency is given', () => {
+    const plan = planPartialPayment(depositInput({ currency: undefined }))!;
+
+    expect(plan.line?.description).toBe('Deposit Due (40% of $10,000.00)');
+    expect(plan.note).not.toContain('€');
+  });
+
+  it('writes a balance invoice with the pound symbol', () => {
+    const plan = planBalanceInvoice({
+      currency: 'GBP',
+      priorPayments: [{ label: 'Payments Received', amount: '£6,000.00' }],
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Contract Price', amount: '£10,000.00' },
+      amountDue: '£4,000.00',
+      lines: [euroRow('Staging and lighting', '£10,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.description).toBe('Total Contract Price (balance due of £10,000.00)');
+    expect(plan.amountDueNote).toBe('remaining balance of £10,000.00');
+    expect(plan.note).toContain('£6,000.00 was already paid');
+    expect(plan.note).not.toContain('$');
+  });
+
+  it('writes a pay application with the euro symbol', () => {
+    const applied = planBalanceInvoice({
+      currency: 'EUR',
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '€2,000.00' }],
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '€5,000.00' },
+      amountDue: '€3,000.00',
+      lines: [euroRow('Site works', '€20,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(applied.noteLabel).toBe('Pay application');
+    expect(applied.line?.description).toBe('Pay application - current payment due (Total Completed and Stored to Date €5,000.00)');
+    expect(applied.note).toContain('after "Less Previous Certificates for Payment" €2,000.00');
+    expect(applied.note).not.toContain('$');
+  });
+
+  const trailing = (previous: string, retainage: string) => planBalanceInvoice({
+    currency: 'EUR',
+    priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: previous }],
+    retainage: { label: 'Retainage', percent: null, amount: retainage },
+    emailBalanceDue: null,
+    lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '5,000.00 €' },
+    amountDue: '2,500.00 €',
+    lines: [euroRow('Site works', '€20,000.00')],
+    poLines: undefined,
+  })!;
+
+  it.each([
+    ['2,000.00 €', '500.00 €'],
+    ['2,000.00 EUR', '500.00 EUR'],
+    ['€-2,000.00', '€ 500.00'],
+  ])('reads a pay application whose amounts print as %s and %s', (previous, retainage) => {
+    const plan = trailing(previous, retainage);
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.totalPrice).toBe('$2,500.00');
+    expect(plan.note).toContain('€2,500.00 current payment due');
+  });
+
+  it.each(['2.000,00 €', 'TBD 0', 'see attached'])('keeps the printed lines when a previous payment prints as "%s"', previous => {
+    const plan = trailing(previous, '500.00 €');
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('a printed previous payment is not a readable amount');
+  });
+
+  it('writes a pay application that holds retainage with the euro symbol', () => {
+    const applied = planBalanceInvoice({
+      currency: 'EUR',
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '€2,000.00' }],
+      retainage: { label: 'Retainage', percent: '10%', amount: '€500.00' },
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '€5,000.00' },
+      amountDue: '€2,500.00',
+      lines: [euroRow('Site works', '€20,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(applied.applied).toBe(true);
+    expect(applied.line?.totalPrice).toBe('$2,500.00');
+    expect(applied.note).toContain('less "Retainage" (10%) €500.00');
+    expect(applied.note).toContain('€2,500.00 current payment due');
+    expect(applied.note).not.toContain('$');
+  });
+
+  it('writes a first pay application, which prints no previous payments, with the euro symbol', () => {
+    const first = planBalanceInvoice({
+      currency: 'EUR',
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '€0.00' }],
+      emailBalanceDue: null,
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '€5,000.00' },
+      amountDue: '€5,000.00',
+      lines: [euroRow('Site works', '€20,000.00')],
+      poLines: undefined,
+    })!;
+
+    expect(first.note).toContain('the printed previous payments total €0.00');
+    expect(first.slackLines[0]).toContain('previous payments €0.00');
+    expect(first.note).not.toContain('$');
   });
 });

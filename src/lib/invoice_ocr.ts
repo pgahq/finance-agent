@@ -5,8 +5,8 @@ import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type Inv
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
-import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
-import { isTaxLikeChargeLabel, summaryCreditCents } from './header_charges.js';
+import { amountDueGapCents, amountDueShortfallCents, isRetainageHeldLabel, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
+import { isPayrollTaxCharge, isTaxLikeChargeLabel, summaryCreditCents, type PayrollTaxContext } from './header_charges.js';
 import { formatChargeDollars, normalizeLabel } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
@@ -213,7 +213,7 @@ function describeRejectedSecondRead(
   const toSum = (rows: typeof retriedRows) => sumExtractedLineCents(rows as InvoiceOcrResult['extractedInvoiceLines'] & object);
   // Rows that total the amount-due gap but read as tax, a balance, a payment, or a finance charge are refused as not lines.
   const notLines = dropped === 0 && plan.amountDueShortfall !== undefined && unmatched.length > 0
-    && toSum(unmatched) === plan.amountDueShortfall && unmatched.some(row => isNonLineRowLabel(row.description));
+    && toSum(unmatched) === plan.amountDueShortfall && unmatched.some(row => isNonLineRowLabel(row.description, { lines: retriedRows }));
   const outcome = notLines ? 'not_lines' : unmatched.length === 0 && dropped === 0 ? 'rejected' : 'inconclusive';
   return {
     outcome,
@@ -258,6 +258,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     creditCents: summaryCreditCents(result.extractedSummaryCharges, lines),
     partialPayment: result.extractedPartialPayment,
     priorPayments: result.extractedPriorPayments,
+    retainage: result.extractedRetainage,
   };
   // Rows, freight, and tax that already reach the amount due leave nothing missing, whatever part of the table a
   // printed subtotal covers (an agreement subtotal can leave a fuel row out).
@@ -297,8 +298,13 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
 
 const NON_LINE_ROW_WORDS = new Set(['payment', 'payments', 'finance', 'interest', 'past', 'overdue', 'outstanding', 'late', 'prior']);
 
-/** Whether a row's label reads as tax, a balance or payment, or a finance charge: money that is not a line. */
-function isNonLineRowLabel(description: string): boolean {
+/**
+ * Whether a row's label reads as tax, a balance or payment, or a finance charge: money that is not a line. On a
+ * payroll recharge, a payroll or employment tax row (a bare "Taxes" row included) is a line, not header tax, so
+ * `context` (the rows the retry would keep) lets a recovered payroll tax row pass instead of being rejected here.
+ */
+function isNonLineRowLabel(description: string, context?: PayrollTaxContext): boolean {
+  if (context && isPayrollTaxCharge(description, context)) return false;
   const tokens = (normalizeLabel(description) ?? '').split(' ');
   return isTaxLikeChargeLabel(description) || tokens.some(token => NOT_BILLED_WORDS.has(token) || NON_LINE_ROW_WORDS.has(token));
 }
@@ -311,11 +317,11 @@ function secondReadClosesGap(
   if (plan.amountDueShortfall !== undefined) {
     // The instruction names the gap, so a tax, balance, payment, or finance row that equals it must not pass for a
     // missed line.
-    if (sumExtractedLineCents(added) === plan.amountDueShortfall && added.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0 && !isNonLineRowLabel(row.description))) return true;
+    if (sumExtractedLineCents(added) === plan.amountDueShortfall && added.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0 && !isNonLineRowLabel(row.description, { lines: retriedRows }))) return true;
   }
   if (plan.subtotalShortfall !== undefined) {
     const retriedCents = sumExtractedLineCents(retriedRows);
-    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents;
+    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents && added.every(row => !isRetainageHeldLabel(row.description));
   }
   return false;
 }
@@ -331,6 +337,7 @@ export function mergeInvoiceEnrichment(
       extractedInvoiceDate: null,
       extractedDueDate: null,
       extractedAmountDue: null,
+      extractedCurrency: null,
       extractedSuppliersInvoiceNumber: null,
       invoiceNumbersInDocument: null,
       extractedFreightAmount: null,
@@ -344,6 +351,7 @@ export function mergeInvoiceEnrichment(
       extractedSecondReadOutcome: null,
       extractedPartialPayment: null,
       extractedPriorPayments: null,
+      extractedRetainage: null,
       extractedPurchaseOrderNumber: null,
       bankingInfoPrinted: null,
       extractedAccountNumber: null,
@@ -377,6 +385,7 @@ export function mergeInvoiceEnrichment(
     extractedInvoiceDate: ocr.extractedInvoiceDate,
     extractedDueDate: ocr.extractedDueDate,
     extractedAmountDue: ocr.extractedAmountDue,
+    extractedCurrency: ocr.extractedCurrency,
     extractedSuppliersInvoiceNumber: ocr.extractedSuppliersInvoiceNumber,
     invoiceNumbersInDocument: ocr.invoiceNumbersInDocument,
     extractedFreightAmount: ocr.extractedFreightAmount,
@@ -390,6 +399,7 @@ export function mergeInvoiceEnrichment(
     extractedSecondReadOutcome: ocr.extractedSecondReadOutcome ?? null,
     extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPriorPayments: ocr.extractedPriorPayments,
+    extractedRetainage: ocr.extractedRetainage,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,
     bankingInfoPrinted: ocr.bankingInfoPrinted,
     extractedAccountNumber: ocr.extractedAccountNumber,

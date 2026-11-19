@@ -91,6 +91,15 @@ describe('uniqueServiceLineMatches', () => {
     const consumed = poLines.map(line => (line.purchaseOrderLineId === DELIVERY_LINE ? { ...line, availableForInvoicing: false } : line));
     expect(uniqueServiceLineMatches(['DELIVERY CHARGE'], consumed).size).toBe(0);
   });
+
+  it('never matches a bare payroll-tax label to a PO service line, even one with the identical description', () => {
+    // A payroll-tax row stays an ordinary line, never pinned to a service line (see placePayrollTaxCharges). The
+    // 6-character minimum on both sides already guarantees this for "Taxes" (5) and "FICA" (4): even a quantity-
+    // zero PO service line printed with the exact same label is too short on both sides to ever match.
+    const payrollTaxServiceLine = { ...poLines[3], purchaseOrderLineId: 'ORDER_SERVICE_LINE-TAX-99999', description: 'Taxes', quantity: undefined };
+    expect(uniqueServiceLineMatches(['Taxes'], [payrollTaxServiceLine]).size).toBe(0);
+    expect(uniqueServiceLineMatches(['FICA'], [{ ...payrollTaxServiceLine, description: 'FICA' }]).size).toBe(0);
+  });
 });
 
 describe('placeChargesOnPoServiceLines', () => {
@@ -251,6 +260,27 @@ describe('amount due explains the Agreement Subtotal gap', () => {
     });
     expect(placed.otherCharges).toEqual([]);
     expect(gap(placed.lines as typeof supin472110Rows, { freight: placed.freightAmount, otherCharges: placed.otherCharges })).toBe(0);
+  });
+
+  it('never pins an excluded row, even a long label that would otherwise satisfy the matcher on its own', () => {
+    // Without excludeFromMatching, this long payroll-tax label (unlike bare "Taxes"/"FICA") is long enough on
+    // both sides to match a PO service line printed with the identical description; the exclusion is what has
+    // to stop it, not the matcher's own length guard (see the `uniqueServiceLineMatches` test above).
+    const payrollTaxRow = { description: 'Employer Payroll Taxes', quantity: null, unitCost: null, totalPrice: '500.00', hasDiscount: null };
+    const payrollTaxServiceLine = { ...poLines[3], purchaseOrderLineId: 'ORDER_SERVICE_LINE-TAX-99999', description: 'Employer Payroll Taxes', quantity: undefined };
+
+    const withoutExclusion = placeChargesOnPoServiceLines({ lines: [payrollTaxRow], otherCharges: null, taxAmount: null, poLines: [payrollTaxServiceLine] });
+    expect(withoutExclusion.lines[0].pinnedPurchaseOrderLineId).toBe('ORDER_SERVICE_LINE-TAX-99999');
+
+    const withExclusion = placeChargesOnPoServiceLines({
+      lines: [payrollTaxRow],
+      otherCharges: null,
+      taxAmount: null,
+      poLines: [payrollTaxServiceLine],
+      excludeFromMatching: line => line.description === 'Employer Payroll Taxes',
+    });
+    expect(withExclusion.lines[0].pinnedPurchaseOrderLineId).toBeUndefined();
+    expect(withExclusion.addedLines).toBe(0);
   });
 });
 

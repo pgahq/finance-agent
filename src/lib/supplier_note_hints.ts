@@ -1,5 +1,6 @@
 import type { DatabaseConnection } from './database.js';
 import { htmlToText } from './html_text.js';
+import { supplierNamesMatch } from './po_supplier.js';
 
 /**
  * Supplier hints from the email context (subject, source email, and every
@@ -86,6 +87,46 @@ export async function resolveSupplierIdHints(
       workdayId: row.workday_id,
       ...(row.metadata?.supplierName ? { supplierName: row.metadata.supplierName } : {}),
     }));
+}
+
+/**
+ * Looking up a Supplier ID named anywhere in a piece of text (an Intercom conversation, an email body, or
+ * both joined together, such as `emailContext.plainTextBody`) and checking it against an expected name, so a
+ * caller never has to re-implement the extraction, the cache lookup, and the name check separately. Never
+ * guesses: more than one distinct Supplier ID in the text is `ambiguous` rather than picking one.
+ */
+export type SupplierIdFromTextResult =
+  | { outcome: 'none' }
+  | { outcome: 'ambiguous'; supplierIds: string[] }
+  | { outcome: 'not_cached'; supplierId: string }
+  | { outcome: 'name_mismatch'; supplierId: string; workdayId: string; supplierName: string }
+  | { outcome: 'excluded'; supplierId: string; workdayId: string; supplierName: string }
+  | { outcome: 'resolved'; supplierId: string; workdayId: string; supplierName: string };
+
+export async function resolveSupplierIdFromText(
+  db: DatabaseConnection,
+  text: string | null | undefined,
+  expectedName: string,
+  options: { excludeWorkdayIds?: Array<string | undefined> } = {}
+): Promise<SupplierIdFromTextResult> {
+  const { supplierIds } = extractSupplierNoteHints(text);
+  if (supplierIds.length === 0) return { outcome: 'none' };
+  if (supplierIds.length > 1) return { outcome: 'ambiguous', supplierIds };
+
+  const [supplierId] = supplierIds;
+  const [hint] = await resolveSupplierIdHints(db, [supplierId]);
+  if (!hint) return { outcome: 'not_cached', supplierId };
+
+  if (!hint.supplierName || !supplierNamesMatch(expectedName, hint.supplierName)) {
+    return { outcome: 'name_mismatch', supplierId, workdayId: hint.workdayId, supplierName: hint.supplierName ?? '' };
+  }
+
+  const excluded = new Set((options.excludeWorkdayIds ?? []).filter((id): id is string => Boolean(id)));
+  if (excluded.has(hint.workdayId)) {
+    return { outcome: 'excluded', supplierId, workdayId: hint.workdayId, supplierName: hint.supplierName };
+  }
+
+  return { outcome: 'resolved', supplierId, workdayId: hint.workdayId, supplierName: hint.supplierName };
 }
 
 /**

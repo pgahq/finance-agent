@@ -997,6 +997,10 @@ describe('describeEmailCompanyReview', () => {
   });
 
   it('names the code for a code-origin company and has no review when nothing conflicts', () => {
+    expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'form' }).note)
+      .toBe("Company applied from the reimbursement form's coding (code 2600): Kentucky.");
+    expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'form', conflictWith: 'bill_to', conflictName: 'PGA' }).review)
+      .toBe("Company Kentucky came from the reimbursement form's coding 2600 but differs from the invoice bill-to company (PGA); verify.");
     expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'code' }).review).toBeUndefined();
     expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'code', conflictWith: 'po', conflictName: 'PGA' }).review)
       .toContain('came from email coding 2600 but differs from the purchase order company (PGA)');

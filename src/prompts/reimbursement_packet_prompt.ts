@@ -15,6 +15,12 @@ export const ReimbursementPacketSchema = z.object({
   formDate: z.string().nullable().describe('The date printed on the reimbursement form (date submitted or signed), as printed. Null when none.'),
   expenseKind: z.string().nullable().describe('One or two words naming what is being reimbursed, such as "hotel", "airfare", "meals", or "mileage". Null when unclear or mixed.'),
   purpose: z.string().nullable().describe('The event or purpose the form gives for the expense, as printed (for example "2026 NYC Marathon Team REACH"). Null when none.'),
+  formCoding: z.object({
+    codingValue: z.string().nullable().describe('A short code printed in the form\'s coding line or cell, usually after a label such as "Coding" and before "Cost Center" (for example "310" in "Coding: 310 / Cost Center: ..."). Copy it exactly as printed. Do not guess whether it is a company, fund, or anything else. Null when none is printed.'),
+    costCenter: z.string().nullable().describe('The cost center name or code in that coding line or cell, labeled "Cost Center". Copy it exactly as printed. Null when none is printed.'),
+    lineOfBusiness: z.string().nullable().describe('The line of business in that coding line or cell, labeled "LOB" or "Line of Business". Copy it exactly as printed. Null when none is printed.'),
+    spendCategory: z.string().nullable().describe('The spend category in that coding line or cell, labeled "Spend Category" or similar. Copy it exactly as printed. Most forms print none; null then.'),
+  }).nullable().describe('The reimbursement form\'s own accounting coding line or cell, separate from the expense grid and from receipts (for example "Coding: 310 / Cost Center: Sample Programs LOB: SPR"). Null when the form prints no such line.'),
   evidence: z.array(z.string()).describe('Up to three short quotes, copied word for word from the documents or email, that show the packet is a reimbursement (for example the form title and the total row). Never quote words that are not printed.'),
 });
 
@@ -30,6 +36,7 @@ Rules:
 - The payee is the person being paid back, from the reimbursement form. A hotel, airline, restaurant, or other merchant on a receipt or folio is never the payee.
 - formAmountToPay is the figure the form itself says to pay. Never use a receipt, folio, or card slip total, and never add numbers together. A hotel folio can show a zero balance because a card already paid it; that is not the amount to pay.
 - Many expense forms print no "Amount to Pay" label. On a grid-style expense report (expense categories as columns, line items as rows) the amount to pay is the TOTALS row's grand total, in the "Sum of All Columns" column. Do not invent a label such as "Total due to payee": formAmountLabel and every evidence quote must be words actually printed in the documents.
+- formCoding is the accounting coding the reimbursement form itself prints, often one line or cell such as "Coding: 310 / Cost Center: Sample Programs LOB: SPR". Copy each labeled value exactly as printed. Do not look up, resolve, correct, or reinterpret a code, and never take coding from a receipt, folio, or the email. Return null when the form prints no coding.
 - Pages may be scanned, sideways, upside down, skewed or shaded. Turn the page in your mind until the text reads upright, then read each figure digit by digit before copying it.
 - emailAmount is a dollar amount the email asks AP to pay. Set emailAmountIsCap to true for wording such as "up to", "maximum", or "not to exceed", and false for an exact amount.
 - Copy amounts, names, dates, and IDs exactly as printed. Do not normalize, correct, or compute them. Use null for anything not printed.
