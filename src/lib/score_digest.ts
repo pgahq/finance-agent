@@ -553,11 +553,15 @@ function displayValue(value: unknown): string {
   return reference ? reference[1] : text;
 }
 
-function changeLine(change: ScoredChange): string {
+export function changeText(change: ScoredChange): string {
   const where = change.line != null ? ` (line ${change.line + 1})` : '';
-  if (change.field === 'line.added') return `• Line added${where}: ${quote(displayValue(change.after))}`;
-  if (change.field === 'line.removed') return `• Line removed${where}: ${quote(displayValue(change.before))}`;
-  return `• ${FIELD_LABELS[change.field]}${where}: ${quote(displayValue(change.before))} → ${quote(displayValue(change.after))}`;
+  if (change.field === 'line.added') return `Line added${where}: ${quote(displayValue(change.after))}`;
+  if (change.field === 'line.removed') return `Line removed${where}: ${quote(displayValue(change.before))}`;
+  return `${FIELD_LABELS[change.field]}${where}: ${quote(displayValue(change.before))} → ${quote(displayValue(change.after))}`;
+}
+
+function changeLine(change: ScoredChange): string {
+  return `• ${changeText(change)}`;
 }
 
 function changeSections(title: string, changes: ScoredChange[]): string[] {

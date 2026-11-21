@@ -177,8 +177,11 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
 - `ScoreDigest` (shadow mode only, when an invoice has a verdict) adds a thread
   reply under the official daily or weekly post: the same
   `touchCalloutBlocks`/`touchChartUrl`/`touchPeriod` over `jevScoreView` scores,
-  then a "Jev vs rules" comparison and up to five largest disagreements
-  (`compareJev`). The cancel line counts only cancels Jev judged (not fact
+  then a "Jev vs rules" comparison, up to five largest disagreements
+  (`compareJev`), and a "Material vs convention: examples" section: up to three
+  changes per direction (rules material to Jev convention, and the reverse) with
+  field, before and after, and Jev's probability, most certain first
+  (`Reclassification`, `changeText`). The cancel line counts only cancels Jev judged (not fact
   bases it was not asked about) and names AP's label as AP. `score_touches.ts` is not touched, so the chart style is the
   same. A failed Jev reply is logged and never fails the run or the posted
   record. In `on` mode the official post is already Jev-scored and no reply is
