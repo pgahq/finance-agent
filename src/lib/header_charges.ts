@@ -578,6 +578,7 @@ export function removeBreakdownRows<T extends ExtractedInvoiceLine>(allLines: T[
   const unchanged: RemovedBreakdownRows<T> = { lines: allLines, removed: [] };
   // Freight rows are not part of the target (it leaves header freight out), so only merchandise rows are searched.
   const { merchandiseLines: lines } = splitFreightLines(allLines);
+  const printedPosition = lines.map(line => allLines.indexOf(line));
   if (input.settlementPrinted || lines.length < BREAKDOWN_MIN_CHILDREN + 1) return unchanged;
   if (lines.some(line => !line.description?.trim())) return unchanged;
   const amounts = lines.map(line => signedChargeLineAmount(line));
@@ -613,6 +614,8 @@ export function removeBreakdownRows<T extends ExtractedInvoiceLine>(allLines: T[
     const children: number[] = [];
     let sum = 0;
     for (let next = parent + 1; next < lines.length && sum < cents[parent]; next += 1) {
+      // A freight row printed between two rows ends the breakdown: rows after it are not the total's tiers.
+      if (printedPosition[next] !== printedPosition[next - 1] + 1) break;
       if (cents[next] === 0) continue;
       if (!groupable(next) || !sameSection(lines[parent], lines[next])) break;
       children.push(next);

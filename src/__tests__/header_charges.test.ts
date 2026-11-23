@@ -1333,6 +1333,14 @@ describe('removeBreakdownRows', () => {
       expect(removeBreakdownRows(lines, { amountDue: '240.00', freight: '40.00' }).removed).toEqual([]);
     });
 
+    it('ends a breakdown at a freight row printed between its rows', () => {
+      const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Shipping', '40.00'), row('Setup', '40.00')];
+      const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('100.00'), amountDue: '140.00', freight: '40.00' });
+
+      expect(result.removed).toEqual([]);
+      expect(result.lines).toBe(lines);
+    });
+
     it('still removes a real breakdown and keeps the freight row in place', () => {
       const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Labor', '40.00'), row('Shipping', '25.00')];
       const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('$100.00'), amountDue: '$125.00', freight: '25.00' });
