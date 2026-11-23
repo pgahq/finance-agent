@@ -151,7 +151,7 @@ describe('buildJevReplyBlocks', () => {
     const out = text(buildJevReplyBlocks({ ruleCallout: callout(0, 2), jevCallout: callout(0, 2), scores }));
     expect(out).toContain('Material vs convention: examples');
     expect(out).toContain('Rules: material (counts against the agent). Jev: convention');
-    expect(out).toContain('Cost center (line 1): `CC-1200 Marketing` → `CC-1200` · Jev 10% sure it was an agent error');
+    expect(out).toContain('Cost center (line 1): `CC-1200 Marketing` → `CC-1200` · Jev 90% sure it was AP preference');
     expect(out).toContain('Rules: convention (ignored). Jev: material');
     expect(out).toContain('Supplier invoice number: `INV-0O42` → `INV-0042` · Jev 95% sure it was an agent error');
   });
@@ -162,8 +162,19 @@ describe('buildJevReplyBlocks', () => {
       jevShadow: { model: 'm', entryDiff: [costCenter('convention', { jev: { probability: 0.1 + index / 100, staticCategory: 'material' } })], entryOutcome: 'submitted_clean' },
     }));
     const out = text(buildJevReplyBlocks({ ruleCallout: callout(0, 5), jevCallout: callout(5, 0), scores }));
-    expect(out.match(/sure it was an agent error/g)).toHaveLength(3);
+    expect(out.match(/sure it was AP preference/g)).toHaveLength(3);
     expect(out).toContain('…and 2 more');
+  });
+
+  it('ranks each direction by how far Jev leaned toward the side it picked', () => {
+    const scores = [0.75, 0.2, 0.5].map((probability, index) => score({
+      workdayInvoiceWid: `wid-${index}`,
+      workdayInvoiceNumber: `SUPIN-${index}`,
+      jevShadow: { model: 'm', entryDiff: [costCenter('convention', { jev: { probability, staticCategory: 'material' } })], entryOutcome: 'submitted_clean' },
+    }));
+    const out = text(buildJevReplyBlocks({ ruleCallout: callout(0, 3), jevCallout: callout(3, 0), scores }));
+    const order = [...out.matchAll(/SUPIN-(\d).*?Jev (\d+)% sure/g)].map((match) => `${match[1]}:${match[2]}`);
+    expect(order).toEqual(['1:80', '2:50', '0:25']);
   });
 
   it('omits the examples when Jev reclassified nothing', () => {

@@ -135,9 +135,14 @@ export function compareJev(scores: InvoiceScore[]): JevComparison {
     }
   }
   comparison.disagreements.sort((a, b) => b.weight - a.weight);
-  const certainty = (item: Reclassification) => Math.abs((item.change.jev?.probability ?? 0.5) - 0.5);
   comparison.reclassifications.sort((a, b) => certainty(b) - certainty(a));
   return comparison;
+}
+
+/** How far Jev leaned toward the category it picked; each group holds one direction, so this ranks within it. */
+function certainty(item: Reclassification): number {
+  const probability = item.change.jev?.probability ?? 0.5;
+  return item.to === 'material' ? probability : 1 - probability;
 }
 
 function reclassificationLines(comparison: JevComparison): string[] {
@@ -151,7 +156,8 @@ function reclassificationLines(comparison: JevComparison): string[] {
         : '_Rules: convention (ignored). Jev: material (AP fixed an agent mistake)_'
     );
     for (const item of matching.slice(0, MAX_RECLASSIFIED_PER_DIRECTION)) {
-      const probability = item.change.jev ? ` · Jev ${percent(item.change.jev.probability)} sure it was an agent error` : '';
+      const verdict = item.to === 'material' ? 'an agent error' : 'AP preference';
+      const probability = item.change.jev ? ` · Jev ${percent(certainty(item))} sure it was ${verdict}` : '';
       lines.push(`• ${invoiceLink(item.score)} · ${changeText(item.change)}${probability}`);
     }
     if (matching.length > MAX_RECLASSIFIED_PER_DIRECTION) lines.push(`…and ${matching.length - MAX_RECLASSIFIED_PER_DIRECTION} more`);

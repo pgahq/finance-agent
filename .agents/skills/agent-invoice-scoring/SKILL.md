@@ -180,7 +180,8 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
   then a "Jev vs rules" comparison, up to five largest disagreements
   (`compareJev`), and a "Material vs convention: examples" section: up to three
   changes per direction (rules material to Jev convention, and the reverse) with
-  field, before and after, and Jev's probability, most certain first
+  field, before and after, and Jev's confidence in the side it picked, most
+  certain first within each direction
   (`Reclassification`, `changeText`). The cancel line counts only cancels Jev judged (not fact
   bases it was not asked about) and names AP's label as AP. `score_touches.ts` is not touched, so the chart style is the
   same. A failed Jev reply is logged and never fails the run or the posted
