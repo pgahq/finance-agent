@@ -7388,9 +7388,10 @@ describe('create_invoice', () => {
         await processor({ data: [request()] } as any);
 
         expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        expect(registry.reserveGeneratedInvoiceNumber).not.toHaveBeenCalled();
         expect(slack.notifyResult).toHaveBeenCalledWith(
           'create_invoice', 'success', expect.any(Number),
-          expect.objectContaining({ skipped: true, invoiceWID: wid }),
+          expect.objectContaining({ skipped: true, invoiceWID: wid, skipReason: expect.stringContaining('different supplier') }),
         );
       });
 

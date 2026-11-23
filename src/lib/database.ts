@@ -108,6 +108,10 @@ export const CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE = `
   );
 `;
 
+export const ADD_CONVERSATION_GENERATED_INVOICE_NUMBERS_AMOUNT_DUE = `
+  ALTER TABLE conversation_generated_invoice_numbers ADD COLUMN IF NOT EXISTS amount_due VARCHAR(32);
+`;
+
 // Short-lived claim taken before any Workday create or update for a conversation invoice, so two
 // racing triggers cannot both write. A claim older than the processor timeout can be taken over.
 export const CREATE_CONVERSATION_INVOICE_CLAIMS_TABLE = `
@@ -346,6 +350,7 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       await pool.query(CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE);
       await pool.query(CREATE_CONVERSATION_INVOICE_CLAIMS_TABLE);
       await pool.query(CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE);
+      await pool.query(ADD_CONVERSATION_GENERATED_INVOICE_NUMBERS_AMOUNT_DUE);
       await pool.query(CREATE_INVOICE_CLUSTER_PLANS_TABLE);
 
       // Agent invoice scoring: snapshots of each agent write, per-invoice scores, and AP cancel labels

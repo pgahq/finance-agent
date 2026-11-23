@@ -1616,10 +1616,27 @@ async function processInvoiceCluster(
     // A number the agent made up is reserved per source document within the conversation: sibling invoices that
     // generate the same base get -2, -3 ..., and a re-trigger of the same document keeps its number.
     const generatedNumberDocumentHash = createHash('sha256').update(buffer).digest('hex');
-    const generatedNumberReservation = composedSuppliersInvoiceNumber.generated
-      && composedSuppliersInvoiceNumber.number
-      && conversationId
-      && !registryNumber
+    const needsGeneratedNumberReservation = Boolean(
+      composedSuppliersInvoiceNumber.generated && composedSuppliersInvoiceNumber.number && conversationId && !registryNumber
+    );
+    // The same document may already have a live invoice under another supplier (a re-trigger often resolves the
+    // default supplier to a real one). Look before reserving, so a skipped run leaves no empty reservation behind.
+    const earlierInvoicesForDocument = needsGeneratedNumberReservation && conversationId
+      ? await findGeneratedInvoicesForDocument(context.dbConnection, {
+        conversationId,
+        supplierWid: submitSupplierWID ?? '',
+        documentHash: generatedNumberDocumentHash,
+      })
+      : [];
+    let liveEarlierInvoice: { assignedNumber: string; workdayInvoiceWid: string; otherSupplier: boolean } | undefined;
+    for (const earlier of earlierInvoicesForDocument) {
+      const earlierEditability = await getSupplierInvoiceEditability(context, earlier.workdayInvoiceWid);
+      if (earlierEditability.found && !earlierEditability.isCanceled && earlierEditability.status !== 'Canceled') {
+        liveEarlierInvoice = { assignedNumber: earlier.assignedNumber, workdayInvoiceWid: earlier.workdayInvoiceWid, otherSupplier: true };
+        break;
+      }
+    }
+    const generatedNumberReservation = needsGeneratedNumberReservation && !liveEarlierInvoice && conversationId && composedSuppliersInvoiceNumber.number
       ? await reserveGeneratedInvoiceNumber(context.dbConnection, {
         conversationId,
         supplierWid: submitSupplierWID ?? '',
@@ -1628,13 +1645,6 @@ async function processInvoiceCluster(
         amountDue: result.extractedAmountDue,
       })
       : undefined;
-    const earlierInvoicesForDocument = generatedNumberReservation && conversationId
-      ? await findGeneratedInvoicesForDocument(context.dbConnection, {
-        conversationId,
-        supplierWid: submitSupplierWID ?? '',
-        documentHash: generatedNumberDocumentHash,
-      })
-      : [];
     const extractedSuppliersInvoiceNumber = generatedNumberReservation?.assignedNumber ?? composedSuppliersInvoiceNumber.number;
     const generatedInvoiceNumberNotes = formatGeneratedInvoiceNumberNotes({
       number: extractedSuppliersInvoiceNumber,
@@ -1782,25 +1792,28 @@ async function processInvoiceCluster(
     // This document already produced an invoice, under its reserved number or under another supplier an earlier
     // run resolved. Resubmitting would only hit Workday's duplicate-number fault or make a second invoice for the
     // same document, so nothing is written. A canceled or deleted earlier invoice does not count.
-    const earlierInvoices = [
-      ...(generatedNumberReservation?.reused && generatedNumberReservation.workdayInvoiceWid
-        ? [{ assignedNumber: generatedNumberReservation.assignedNumber, workdayInvoiceWid: generatedNumberReservation.workdayInvoiceWid }]
-        : []),
-      ...earlierInvoicesForDocument,
-    ];
-    for (const earlier of earlierInvoices) {
-      const existingEditability = await getSupplierInvoiceEditability(context, earlier.workdayInvoiceWid);
-      const existingRemoved = !existingEditability.found || existingEditability.isCanceled || existingEditability.status === 'Canceled';
-      if (existingRemoved) continue;
+    let skipForInvoice = liveEarlierInvoice;
+    if (!skipForInvoice && generatedNumberReservation?.reused && generatedNumberReservation.workdayInvoiceWid) {
+      const existingEditability = await getSupplierInvoiceEditability(context, generatedNumberReservation.workdayInvoiceWid);
+      if (existingEditability.found && !existingEditability.isCanceled && existingEditability.status !== 'Canceled') {
+        skipForInvoice = {
+          assignedNumber: generatedNumberReservation.assignedNumber,
+          workdayInvoiceWid: generatedNumberReservation.workdayInvoiceWid,
+          otherSupplier: false,
+        };
+      }
+    }
+    if (skipForInvoice) {
       debug('Document already has an invoice under a generated number; skipping', {
         conversationId,
-        suppliersInvoiceNumber: earlier.assignedNumber,
+        suppliersInvoiceNumber: skipForInvoice.assignedNumber,
       });
       await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
         ...sharedSlackDetails,
-        invoiceWID: earlier.workdayInvoiceWid,
+        invoiceWID: skipForInvoice.workdayInvoiceWid,
         skipped: true,
-        skipReason: `This document already has supplier invoice ${earlier.assignedNumber} in Workday from an earlier run for this conversation, so no new invoice was created.`,
+        skipReason: `This document already has supplier invoice ${skipForInvoice.assignedNumber} in Workday from an earlier run for this conversation, so no new invoice was created.`
+          + (skipForInvoice.otherSupplier ? ' That invoice is on a different supplier than this run resolved; move it to the right supplier in Workday if needed.' : ''),
       }, conversationId, intercomAppId));
       return;
     }
