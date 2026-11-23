@@ -74,6 +74,7 @@ export const InvoiceOcrSchema = z.object({
   extractedSupplierReferenceKind: printedText(enrichment.extractedSupplierReferenceKind),
   extractedCustomerId: printedText(enrichment.extractedCustomerId),
   extractedServicePeriod: printedText(enrichment.extractedServicePeriod),
+  extractedServiceDate: printedText(enrichment.extractedServiceDate),
   extractedPaymentTerms: z.string().describe('The payment terms as printed on the invoice (e.g. "Net 30", "Due on Receipt"). Empty string if none are printed.'),
   invoiceLineQuantityDisplayed: enrichment.invoiceLineQuantityDisplayed,
   extractedInvoiceLines: z.array(ocrInvoiceLine).describe(`${enrichment.extractedInvoiceLines.description ?? ''} Return an empty array instead of null.`),
@@ -414,6 +415,8 @@ Extract these identifiers independently when they appear on the invoice or in a 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 
 4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", "Week Ending", or From/To. Return the dates or period only, without the label in front of them (\`09/28/2026 - 10/11/2026\`, not \`Pay Date Range 09/28/2026 - 10/11/2026\`). Keep the document wording for the dates; do not invent dates.
+
+5. **Service date** (\`extractedServiceDate\`): the one date of service, event, or delivery the whole invoice bills, as YYYY-MM-DD (11/13/26 is 2026-11-13). It is not part of the memo; code uses it to name an invoice that prints no number. Take it from a "Date of Service", "Service Date", or "Event Date" label, or from the Date column of the line-item table when every line item shows that same single date (a one-row table with a date in its Date column is the usual case). Leave it empty when the line items show different dates, a date range or period, or no per-line date; when the only dates printed are the invoice, statement, due, or print date (the date at the top of the page or beside "Invoice Date" is the invoice date, never the service date); or when you cannot tell which date is the service date.
 
 ---
 

@@ -78,6 +78,7 @@ function ocrResponseFor(numbers: string[], amountDue: string, poNumber: string):
     extractedSupplierReferenceKind: '',
     extractedCustomerId: '',
     extractedServicePeriod: '',
+    extractedServiceDate: '',
     extractedPaymentTerms: 'Net 30',
     invoiceLineQuantityDisplayed: false,
     extractedInvoiceLines: [],

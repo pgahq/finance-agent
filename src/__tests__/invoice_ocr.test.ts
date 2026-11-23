@@ -91,6 +91,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
   extractedServicePeriod: 'Sept 28 - Oct 2',
+  extractedServiceDate: '2026-09-30',
   extractedPaymentTerms: { name: 'Due on receipt' },
   invoiceLineQuantityDisplayed: true,
   extractedInvoiceLines: [{
@@ -147,6 +148,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
   extractedServicePeriod: 'Sept 28 - Oct 2',
+  extractedServiceDate: '2026-09-30',
   extractedPaymentTerms: 'Due on receipt',
   invoiceLineQuantityDisplayed: true,
   extractedInvoiceLines: [{
