@@ -1,5 +1,7 @@
 import {
   acquireConversationInvoiceClaim,
+  findGeneratedInvoicesForDocument,
+  generatedNumberAmountKey,
   getConversationSupplierInvoice,
   recordGeneratedInvoiceNumberInvoice,
   reserveGeneratedInvoiceNumber,
@@ -111,7 +113,7 @@ describe('reserveGeneratedInvoiceNumber', () => {
       workdayInvoiceWid: null,
     });
     expect(query.mock.calls[1][0]).toContain('ON CONFLICT DO NOTHING');
-    expect(query.mock.calls[1][1]).toEqual(['123', 'supplier-wid', 'ABCD031126', 'ABCD031126', params.documentHash]);
+    expect(query.mock.calls[1][1]).toEqual(['123', 'supplier-wid', 'ABCD031126', 'ABCD031126', params.documentHash, null]);
   });
 
   it('walks to -2 and -3 while siblings hold the earlier numbers', async () => {
@@ -121,7 +123,8 @@ describe('reserveGeneratedInvoiceNumber', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ assigned_number: 'ABCD031126-3' }]);
+      .mockResolvedValueOnce([{ assigned_number: 'ABCD031126-3' }])
+      .mockResolvedValueOnce([{ amount_due: null }]);
     const db: DatabaseConnection = { query, close: jest.fn() };
 
     await expect(reserveGeneratedInvoiceNumber(db, params)).resolves.toMatchObject({ assignedNumber: 'ABCD031126-3', reused: false });
@@ -162,5 +165,42 @@ describe('recordGeneratedInvoiceNumberInvoice', () => {
       expect.stringContaining('UPDATE conversation_generated_invoice_numbers'),
       ['123', 'supplier-wid', 'ABCD031126-2', 'invoice-wid']
     );
+  });
+});
+
+describe('generated number amount and other-supplier lookups', () => {
+  const params = { conversationId: '123', supplierWid: 'supplier-wid', baseNumber: 'ABCD031126', documentHash: 'h'.repeat(64) };
+
+  it('normalizes printed amounts and ignores unreadable ones', () => {
+    expect(generatedNumberAmountKey('$1,350.00')).toBe('1350.00');
+    expect(generatedNumberAmountKey('1350')).toBe('1350.00');
+    expect(generatedNumberAmountKey('see invoice')).toBeNull();
+    expect(generatedNumberAmountKey(null)).toBeNull();
+  });
+
+  it('stores the amount on the reservation and returns the base holder amount when suffixed', async () => {
+    const query = jest.fn<Promise<unknown[]>, [string, unknown[]?]>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ assigned_number: 'ABCD031126-2' }])
+      .mockResolvedValueOnce([{ amount_due: '1350.00' }]);
+    const db: DatabaseConnection = { query, close: jest.fn() };
+
+    await expect(reserveGeneratedInvoiceNumber(db, { ...params, amountDue: '$1,350.00' })).resolves.toEqual({
+      assignedNumber: 'ABCD031126-2',
+      reused: false,
+      workdayInvoiceWid: null,
+      baseAmountDue: '1350.00',
+    });
+    expect(query.mock.calls[1][1]).toEqual(['123', 'supplier-wid', 'ABCD031126', 'ABCD031126', params.documentHash, '1350.00']);
+  });
+
+  it('finds invoices an earlier run created from the document under another supplier', async () => {
+    const { db, query } = mockDb([{ supplier_wid: 'default-supplier', assigned_number: 'ABCD031126', workday_invoice_wid: 'invoice-wid' }]);
+
+    await expect(findGeneratedInvoicesForDocument(db, { conversationId: '123', supplierWid: 'supplier-wid', documentHash: params.documentHash }))
+      .resolves.toEqual([{ supplierWid: 'default-supplier', assignedNumber: 'ABCD031126', workdayInvoiceWid: 'invoice-wid' }]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('supplier_wid <> $3'), ['123', params.documentHash, 'supplier-wid']);
   });
 });

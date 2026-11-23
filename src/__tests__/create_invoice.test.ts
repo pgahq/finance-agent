@@ -162,6 +162,8 @@ jest.mock('../lib/conversation_invoices.js', () => ({
     workdayInvoiceWid: null,
   })),
   recordGeneratedInvoiceNumberInvoice: jest.fn().mockResolvedValue(undefined),
+  findGeneratedInvoicesForDocument: jest.fn().mockResolvedValue([]),
+  generatedNumberAmountKey: jest.requireActual('../lib/conversation_invoices.js').generatedNumberAmountKey,
 }));
 
 jest.mock('../lib/invoice_cluster_plans.js', () => ({
@@ -7233,6 +7235,12 @@ describe('create_invoice', () => {
           supplierWid: 'supplier-wid-1',
           baseNumber: 'TEST031126',
           documentHash,
+          amountDue: unnumbered.extractedAmountDue,
+        });
+        expect(registry.findGeneratedInvoicesForDocument).toHaveBeenCalledWith(expect.anything(), {
+          conversationId: '1234567890',
+          supplierWid: 'supplier-wid-1',
+          documentHash,
         });
         const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
         expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
@@ -7345,6 +7353,59 @@ describe('create_invoice', () => {
           'create_invoice', 'success', expect.any(Number),
           expect.objectContaining({ skipped: true, invoiceWID: wid }),
         );
+      });
+
+      it('asks AP to rule out a resend when the suffixed invoice has the same amount due', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedAmountDue: '$1,350.00' });
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126-2',
+          reused: false,
+          workdayInvoiceWid: null,
+          baseAmountDue: '1350.00',
+        });
+
+        await processor({ data: [request()] } as any);
+
+        const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+        expect(notes).toContain('TEST031126 has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({ lineReview: expect.arrayContaining([expect.stringContaining('for the same amount due. Check this is not a resend of that invoice.')]) }),
+        );
+      });
+
+      it('skips a document whose earlier invoice is live under another supplier', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.findGeneratedInvoicesForDocument.mockResolvedValue([
+          { supplierWid: 'default-supplier', assignedNumber: 'TEST031126', workdayInvoiceWid: wid },
+        ]);
+        workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+        await processor({ data: [request()] } as any);
+
+        expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({ skipped: true, invoiceWID: wid }),
+        );
+      });
+
+      it('creates when the earlier invoice under another supplier was canceled', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.findGeneratedInvoicesForDocument.mockResolvedValue([
+          { supplierWid: 'default-supplier', assignedNumber: 'TEST031126', workdayInvoiceWid: wid },
+        ]);
+        workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, isCanceled: true, status: 'Canceled' });
+
+        await processor({ data: [request()] } as any);
+
+        expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
       });
 
       it('creates again under the same number when AP canceled the earlier invoice', async () => {

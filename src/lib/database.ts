@@ -99,6 +99,7 @@ export const CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE = `
     assigned_number VARCHAR(255) NOT NULL,
     base_number VARCHAR(255) NOT NULL,
     document_hash CHAR(64) NOT NULL,
+    amount_due VARCHAR(32),
     workday_invoice_wid VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

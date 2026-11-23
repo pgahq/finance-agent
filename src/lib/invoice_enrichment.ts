@@ -468,6 +468,9 @@ export function formatGeneratedInvoiceNumberNotes(generated: {
   baseNumber?: string;
   /** The date of service, YYYY-MM-DD, when the number was named from it. */
   serviceDate?: string | null;
+  /** The amount due of this invoice and of the invoice holding the base number, as generatedNumberAmountKey. */
+  amountDue?: string | null;
+  baseAmountDue?: string | null;
 }): string {
   if (!generated.number || !generated.basis || generated.basis === 'printed') return '';
   const suffixed = Boolean(generated.baseNumber && generated.baseNumber !== generated.number);
@@ -477,8 +480,14 @@ export function formatGeneratedInvoiceNumberNotes(generated: {
     : generated.basis === 'account'
       ? 'generated from the account number'
       : 'generated from the invoice date';
-  return `\n\nSupplier Invoice Number (no number printed; ${origin}): ${generated.number}`
-    + (suffixed ? `. ${generated.baseNumber} is already used by another invoice in this conversation, so this one is suffixed.` : '');
+  const sameAmount = Boolean(generated.amountDue && generated.amountDue === generated.baseAmountDue);
+  const suffixNote = suffixed
+    ? `. ${generated.baseNumber} is already used by another invoice in this conversation, so this one is suffixed.`
+      + (sameAmount
+        ? ` ${generated.baseNumber} has the same amount due ($${generated.amountDue}). Check this is not a resend of that invoice before submitting.`
+        : ` Check this is not a resend of ${generated.baseNumber} before submitting.`)
+    : '';
+  return `\n\nSupplier Invoice Number (no number printed; ${origin}): ${generated.number}${suffixNote}`;
 }
 
 export function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): string {

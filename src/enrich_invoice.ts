@@ -97,6 +97,10 @@ function invoiceNumberOf(invoice: { Invoice_Number?: unknown } | undefined): str
   return typeof invoice?.Invoice_Number === 'string' && invoice.Invoice_Number ? invoice.Invoice_Number : undefined;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function invoiceNumberText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -271,15 +275,20 @@ async function processInvoice(
         result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined,
       ),
     });
-    // The create path suffixes a number that a sibling invoice in the conversation already holds (FRIS111326-2).
-    // Writing the base number back would hit Workday's duplicate-number fault, so that invoice keeps its number.
+    // Create makes up a number from a model-read service date and suffixes a sibling's duplicate (FRIS111326-2).
+    // Enrich can read a different date, so it keeps any number already in that generated form for this supplier
+    // prefix instead of renaming the invoice or colliding with a sibling. Account-number invoices keep a base-N suffix.
     const currentSuppliersInvoiceNumber = invoiceNumberText(detailedInvoice.Suppliers_Invoice_Number);
+    const composedNumber = composedSuppliersInvoiceNumber.number;
+    const generatedPattern = composedSuppliersInvoiceNumber.generated && composedNumber
+      ? composedSuppliersInvoiceNumber.basis === 'account'
+        ? new RegExp(`^${escapeRegExp(composedNumber)}(-\\d+)?$`)
+        : composedNumber.length > 6
+          ? new RegExp(`^${escapeRegExp(composedNumber.slice(0, -6))}\\d{6}(-\\d+)?$`)
+          : undefined
+      : undefined;
     const keepsSiblingSuffix = Boolean(
-      composedSuppliersInvoiceNumber.generated
-      && composedSuppliersInvoiceNumber.number
-      && currentSuppliersInvoiceNumber
-      && currentSuppliersInvoiceNumber.startsWith(`${composedSuppliersInvoiceNumber.number}-`)
-      && /^\d+$/.test(currentSuppliersInvoiceNumber.slice(composedSuppliersInvoiceNumber.number.length + 1))
+      generatedPattern && currentSuppliersInvoiceNumber && generatedPattern.test(currentSuppliersInvoiceNumber)
     );
     const extractedSuppliersInvoiceNumber = keepsSiblingSuffix ? undefined : composedSuppliersInvoiceNumber.number;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;

@@ -49,6 +49,8 @@ import { snapshotAgentWrite } from './lib/invoice_snapshots.js';
 import {
   acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
+  findGeneratedInvoicesForDocument,
+  generatedNumberAmountKey,
   recordGeneratedInvoiceNumberInvoice,
   releaseConversationInvoiceClaim,
   reserveGeneratedInvoiceNumber,
@@ -1613,6 +1615,7 @@ async function processInvoiceCluster(
     const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
     // A number the agent made up is reserved per source document within the conversation: sibling invoices that
     // generate the same base get -2, -3 ..., and a re-trigger of the same document keeps its number.
+    const generatedNumberDocumentHash = createHash('sha256').update(buffer).digest('hex');
     const generatedNumberReservation = composedSuppliersInvoiceNumber.generated
       && composedSuppliersInvoiceNumber.number
       && conversationId
@@ -1621,16 +1624,33 @@ async function processInvoiceCluster(
         conversationId,
         supplierWid: submitSupplierWID ?? '',
         baseNumber: composedSuppliersInvoiceNumber.number,
-        documentHash: createHash('sha256').update(buffer).digest('hex'),
+        documentHash: generatedNumberDocumentHash,
+        amountDue: result.extractedAmountDue,
       })
       : undefined;
+    const earlierInvoicesForDocument = generatedNumberReservation && conversationId
+      ? await findGeneratedInvoicesForDocument(context.dbConnection, {
+        conversationId,
+        supplierWid: submitSupplierWID ?? '',
+        documentHash: generatedNumberDocumentHash,
+      })
+      : [];
     const extractedSuppliersInvoiceNumber = generatedNumberReservation?.assignedNumber ?? composedSuppliersInvoiceNumber.number;
     const generatedInvoiceNumberNotes = formatGeneratedInvoiceNumberNotes({
       number: extractedSuppliersInvoiceNumber,
       basis: composedSuppliersInvoiceNumber.basis,
       baseNumber: composedSuppliersInvoiceNumber.number,
       serviceDate: extractedServiceDate,
+      amountDue: generatedNumberAmountKey(result.extractedAmountDue),
+      baseAmountDue: generatedNumberReservation?.baseAmountDue,
     });
+    const suffixedNumberReview = generatedNumberReservation && composedSuppliersInvoiceNumber.number
+      && generatedNumberReservation.assignedNumber !== composedSuppliersInvoiceNumber.number
+      ? `Supplier invoice number ${generatedNumberReservation.assignedNumber}: ${composedSuppliersInvoiceNumber.number} is already used by another invoice in this conversation`
+        + (generatedNumberAmountKey(result.extractedAmountDue) && generatedNumberAmountKey(result.extractedAmountDue) === generatedNumberReservation.baseAmountDue
+          ? ' for the same amount due. Check this is not a resend of that invoice.'
+          : '. Check this is not a resend of that invoice.')
+      : undefined;
     const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + reimbursementCodingNotes + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + generatedInvoiceNumberNotes + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
@@ -1752,31 +1772,37 @@ async function processInvoiceCluster(
         paymentTerms: result.extractedPaymentTerms ? describePaymentTerms(result.extractedPaymentTerms) : undefined,
       },
       lineCount: finalLines.length,
-      ...(lineReview.length ? { lineReview } : {}),
+      ...(lineReview.length || suffixedNumberReview ? { lineReview: [...lineReview, ...(suffixedNumberReview ? [suffixedNumberReview] : [])] } : {}),
       ...(depositPlan?.slackLines.length ? { deposit: depositPlan.slackLines } : {}),
       ...(balancePlan?.slackLines.length ? { balanceInvoice: balancePlan.slackLines } : {}),
       ...(reimbursement ? { reimbursement: reimbursementSlackLines(reimbursement) } : {}),
       ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 
-    // This document already produced an invoice under its reserved number. Resubmitting would only hit Workday's
-    // duplicate-number fault, and a suffix would make a second invoice, so nothing is written.
-    if (generatedNumberReservation?.reused && generatedNumberReservation.workdayInvoiceWid) {
-      const existingEditability = await getSupplierInvoiceEditability(context, generatedNumberReservation.workdayInvoiceWid);
+    // This document already produced an invoice, under its reserved number or under another supplier an earlier
+    // run resolved. Resubmitting would only hit Workday's duplicate-number fault or make a second invoice for the
+    // same document, so nothing is written. A canceled or deleted earlier invoice does not count.
+    const earlierInvoices = [
+      ...(generatedNumberReservation?.reused && generatedNumberReservation.workdayInvoiceWid
+        ? [{ assignedNumber: generatedNumberReservation.assignedNumber, workdayInvoiceWid: generatedNumberReservation.workdayInvoiceWid }]
+        : []),
+      ...earlierInvoicesForDocument,
+    ];
+    for (const earlier of earlierInvoices) {
+      const existingEditability = await getSupplierInvoiceEditability(context, earlier.workdayInvoiceWid);
       const existingRemoved = !existingEditability.found || existingEditability.isCanceled || existingEditability.status === 'Canceled';
-      if (!existingRemoved) {
-        debug('Document already has an invoice under its generated number; skipping', {
-          conversationId,
-          suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-        });
-        await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
-          ...sharedSlackDetails,
-          invoiceWID: generatedNumberReservation.workdayInvoiceWid,
-          skipped: true,
-          skipReason: `This document already has supplier invoice ${extractedSuppliersInvoiceNumber} in Workday from an earlier run for this conversation, so no new invoice was created.`,
-        }, conversationId, intercomAppId));
-        return;
-      }
+      if (existingRemoved) continue;
+      debug('Document already has an invoice under a generated number; skipping', {
+        conversationId,
+        suppliersInvoiceNumber: earlier.assignedNumber,
+      });
+      await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
+        ...sharedSlackDetails,
+        invoiceWID: earlier.workdayInvoiceWid,
+        skipped: true,
+        skipReason: `This document already has supplier invoice ${earlier.assignedNumber} in Workday from an earlier run for this conversation, so no new invoice was created.`,
+      }, conversationId, intercomAppId));
+      return;
     }
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();

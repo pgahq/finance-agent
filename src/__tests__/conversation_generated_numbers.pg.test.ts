@@ -4,7 +4,7 @@
  */
 import { Pool } from 'pg';
 import { CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE, type DatabaseConnection } from '../lib/database.js';
-import { recordGeneratedInvoiceNumberInvoice, reserveGeneratedInvoiceNumber } from '../lib/conversation_invoices.js';
+import { findGeneratedInvoicesForDocument, recordGeneratedInvoiceNumberInvoice, reserveGeneratedInvoiceNumber } from '../lib/conversation_invoices.js';
 
 const url = process.env.GENERATED_NUMBERS_PG_URL;
 const describeWithPostgres = url ? describe : describe.skip;
@@ -30,7 +30,7 @@ describeWithPostgres('generated invoice number reservation (Postgres)', () => {
     await pool.end();
   });
 
-  const reserve = (documentHash: string, overrides: Partial<{ conversationId: string; supplierWid: string; baseNumber: string }> = {}) =>
+  const reserve = (documentHash: string, overrides: Partial<{ conversationId: string; supplierWid: string; baseNumber: string; amountDue: string }> = {}) =>
     reserveGeneratedInvoiceNumber(db, {
       conversationId: 'conv-1',
       supplierWid: 'supplier-1',
@@ -53,6 +53,25 @@ describeWithPostgres('generated invoice number reservation (Postgres)', () => {
 
     const again = await reserve('b', { baseNumber: 'ABCD031726' });
     expect(again).toEqual({ assignedNumber: 'ABCD031126-2', reused: true, workdayInvoiceWid: null });
+  });
+
+  it('returns the amount due of the base holder when a sibling is suffixed', async () => {
+    await reserve('a', { amountDue: '$1,350.00' });
+    const second = await reserve('b', { amountDue: '$1,350.00' });
+    expect(second).toMatchObject({ assignedNumber: 'ABCD031126-2', baseAmountDue: '1350.00' });
+  });
+
+  it('finds the document under another supplier only once an invoice is recorded for it', async () => {
+    const first = await reserve('a', { supplierWid: 'default-supplier' });
+    const lookup = () => findGeneratedInvoicesForDocument(db, { conversationId: 'conv-1', supplierWid: 'supplier-1', documentHash: 'a'.padEnd(64, '0') });
+    await expect(lookup()).resolves.toEqual([]);
+
+    await recordGeneratedInvoiceNumberInvoice(db, {
+      conversationId: 'conv-1', supplierWid: 'default-supplier', assignedNumber: first.assignedNumber, workdayInvoiceWid: 'invoice-wid',
+    });
+    await expect(lookup()).resolves.toEqual([
+      { supplierWid: 'default-supplier', assignedNumber: 'ABCD031126', workdayInvoiceWid: 'invoice-wid' },
+    ]);
   });
 
   it('reserves one number when the same document arrives in parallel', async () => {
