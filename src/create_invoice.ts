@@ -19,6 +19,8 @@ import {
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatGeneratedInvoiceNumberNotes,
+  describeGeneratedNumberClash,
+  type GeneratedInvoiceNumberClash,
   formatFreeRowsNotes,
   formatLinePriceReviewNotes,
   formatLineTotalReviewNotes,
@@ -55,6 +57,7 @@ import {
   recordGeneratedInvoiceNumberInvoice,
   releaseConversationInvoiceClaim,
   reserveGeneratedInvoiceNumber,
+  settleGeneratedInvoiceNumber,
   upsertConversationSupplierInvoice,
   type ConversationSupplierInvoice,
 } from './lib/conversation_invoices.js';
@@ -1108,6 +1111,43 @@ async function processInvoiceCluster(
     });
     const submitSupplierWID = purchaseOrderSupplier?.workdayId ?? targetSupplierWID;
 
+    // Key resends on the number printed on the document, never a generated submit value: a number composed
+    // from the supplier name and date would give two unnumbered invoices on the same day one registry row.
+    const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
+    // A number the agent made up is reserved per source document within the conversation, early in the run so a
+    // sibling invoice that generates the same number sees it: the first takes the supplier plus invoice date, a
+    // sibling takes the supplier plus service date, then -2, -3 ... A re-trigger of the same document keeps its number.
+    const generatedNumberDocumentHash = createHash('sha256').update(buffer).digest('hex');
+    const needsGeneratedNumberReservation = Boolean(
+      composedSuppliersInvoiceNumber.generated && composedSuppliersInvoiceNumber.number && conversationId && !registryNumber
+    );
+    // The same document may already have a live invoice under another supplier (a re-trigger often resolves the
+    // default supplier to a real one). Look before reserving, so a skipped run leaves no empty reservation behind.
+    const earlierInvoicesForDocument = needsGeneratedNumberReservation && conversationId
+      ? await findGeneratedInvoicesForDocument(context.dbConnection, {
+        conversationId,
+        supplierWid: submitSupplierWID ?? '',
+        documentHash: generatedNumberDocumentHash,
+      })
+      : [];
+    let liveEarlierInvoice: { assignedNumber: string; workdayInvoiceWid: string; otherSupplier: boolean } | undefined;
+    for (const earlier of earlierInvoicesForDocument) {
+      const earlierEditability = await getSupplierInvoiceEditability(context, earlier.workdayInvoiceWid);
+      if (earlierEditability.found && !earlierEditability.isCanceled && earlierEditability.status !== 'Canceled') {
+        liveEarlierInvoice = { assignedNumber: earlier.assignedNumber, workdayInvoiceWid: earlier.workdayInvoiceWid, otherSupplier: true };
+        break;
+      }
+    }
+    const generatedNumberReservation = needsGeneratedNumberReservation && !liveEarlierInvoice && conversationId && composedSuppliersInvoiceNumber.number
+      ? await reserveGeneratedInvoiceNumber(context.dbConnection, {
+        conversationId,
+        supplierWid: submitSupplierWID ?? '',
+        candidates: [composedSuppliersInvoiceNumber.number, composedSuppliersInvoiceNumber.serviceDateNumber].filter((number): number is string => Boolean(number)),
+        documentHash: generatedNumberDocumentHash,
+        amountDue: result.extractedAmountDue,
+      })
+      : undefined;
+
     const poCompanyWID = matchedPo?.company?.workdayId;
     const defaultCompany = resolveDefaultCompany();
     const selectedCompany = selectCompanyForCreateInvoice({
@@ -1631,56 +1671,53 @@ async function processInvoiceCluster(
       ? reimbursementCodingNote(reimbursement, { companyFromForm: Boolean(formNamedCompany), defaultCompany: usedDefaultCompany })
       : '';
     const reimbursementCodingNotes = reimbursementCodingText ? `\n\n${reimbursementCodingText}` : '';
-    // Key resends on the number printed on the document, never a generated submit value: a number composed
-    // from the supplier name and date would give two unnumbered invoices on the same day one registry row.
-    const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
-    // A number the agent made up is reserved per source document within the conversation: sibling invoices that
-    // generate the same base get -2, -3 ..., and a re-trigger of the same document keeps its number.
-    const generatedNumberDocumentHash = createHash('sha256').update(buffer).digest('hex');
-    const needsGeneratedNumberReservation = Boolean(
-      composedSuppliersInvoiceNumber.generated && composedSuppliersInvoiceNumber.number && conversationId && !registryNumber
-    );
-    // The same document may already have a live invoice under another supplier (a re-trigger often resolves the
-    // default supplier to a real one). Look before reserving, so a skipped run leaves no empty reservation behind.
-    const earlierInvoicesForDocument = needsGeneratedNumberReservation && conversationId
-      ? await findGeneratedInvoicesForDocument(context.dbConnection, {
+    // A sibling that clashed with the default (invoice-date) number since this run reserved it marked it contested;
+    // move to the service-date number now, before the notes name the number, so a batch of same-date invoices ends
+    // up with service-date numbers. Nothing has been created yet, so the move is safe.
+    const settledNumber = generatedNumberReservation && !generatedNumberReservation.reused && conversationId
+      && composedSuppliersInvoiceNumber.number && composedSuppliersInvoiceNumber.serviceDateNumber
+      && generatedNumberReservation.assignedNumber === composedSuppliersInvoiceNumber.number
+      ? await settleGeneratedInvoiceNumber(context.dbConnection, {
         conversationId,
         supplierWid: submitSupplierWID ?? '',
         documentHash: generatedNumberDocumentHash,
-      })
-      : [];
-    let liveEarlierInvoice: { assignedNumber: string; workdayInvoiceWid: string; otherSupplier: boolean } | undefined;
-    for (const earlier of earlierInvoicesForDocument) {
-      const earlierEditability = await getSupplierInvoiceEditability(context, earlier.workdayInvoiceWid);
-      if (earlierEditability.found && !earlierEditability.isCanceled && earlierEditability.status !== 'Canceled') {
-        liveEarlierInvoice = { assignedNumber: earlier.assignedNumber, workdayInvoiceWid: earlier.workdayInvoiceWid, otherSupplier: true };
-        break;
-      }
-    }
-    const generatedNumberReservation = needsGeneratedNumberReservation && !liveEarlierInvoice && conversationId && composedSuppliersInvoiceNumber.number
-      ? await reserveGeneratedInvoiceNumber(context.dbConnection, {
-        conversationId,
-        supplierWid: submitSupplierWID ?? '',
-        baseNumber: composedSuppliersInvoiceNumber.number,
-        documentHash: generatedNumberDocumentHash,
+        assignedNumber: generatedNumberReservation.assignedNumber,
+        alternateNumber: composedSuppliersInvoiceNumber.serviceDateNumber,
         amountDue: result.extractedAmountDue,
       })
       : undefined;
-    const extractedSuppliersInvoiceNumber = generatedNumberReservation?.assignedNumber ?? composedSuppliersInvoiceNumber.number;
+    const extractedSuppliersInvoiceNumber = settledNumber?.assignedNumber ?? generatedNumberReservation?.assignedNumber ?? composedSuppliersInvoiceNumber.number;
+    const takenServiceDateNumber = Boolean(
+      extractedSuppliersInvoiceNumber && composedSuppliersInvoiceNumber.serviceDateNumber
+      && extractedSuppliersInvoiceNumber.startsWith(composedSuppliersInvoiceNumber.serviceDateNumber)
+    );
+    const generatedNumberBasis = takenServiceDateNumber ? 'service_date' : composedSuppliersInvoiceNumber.basis;
+    const amountDueKey = generatedNumberAmountKey(result.extractedAmountDue);
+    const generatedNumberClash: GeneratedInvoiceNumberClash | undefined = settledNumber?.moved && composedSuppliersInvoiceNumber.number
+      ? {
+        clashedNumber: composedSuppliersInvoiceNumber.number,
+        suffixed: false,
+        invoiceDate: extractedInvoiceDate,
+        amountDue: amountDueKey,
+        clashedAmountDue: settledNumber.sameAmountSibling ? amountDueKey : null,
+      }
+      : generatedNumberReservation?.clashedNumber
+        ? {
+          clashedNumber: generatedNumberReservation.clashedNumber,
+          suffixed: Boolean(generatedNumberReservation.suffixed),
+          invoiceDate: extractedInvoiceDate,
+          amountDue: amountDueKey,
+          clashedAmountDue: generatedNumberReservation.clashedAmountDue,
+        }
+        : undefined;
     const generatedInvoiceNumberNotes = formatGeneratedInvoiceNumberNotes({
       number: extractedSuppliersInvoiceNumber,
-      basis: composedSuppliersInvoiceNumber.basis,
-      baseNumber: composedSuppliersInvoiceNumber.number,
+      basis: generatedNumberBasis,
       serviceDate: extractedServiceDate,
-      amountDue: generatedNumberAmountKey(result.extractedAmountDue),
-      baseAmountDue: generatedNumberReservation?.baseAmountDue,
+      ...(generatedNumberClash ? { clash: generatedNumberClash } : {}),
     });
-    const suffixedNumberReview = generatedNumberReservation && composedSuppliersInvoiceNumber.number
-      && generatedNumberReservation.assignedNumber !== composedSuppliersInvoiceNumber.number
-      ? `Supplier invoice number ${generatedNumberReservation.assignedNumber}: ${composedSuppliersInvoiceNumber.number} is already used by another invoice in this conversation`
-        + (generatedNumberAmountKey(result.extractedAmountDue) && generatedNumberAmountKey(result.extractedAmountDue) === generatedNumberReservation.baseAmountDue
-          ? ' for the same amount due. Check this is not a resend of that invoice.'
-          : '. Check this is not a resend of that invoice.')
+    const suffixedNumberReview = generatedNumberClash && extractedSuppliersInvoiceNumber
+      ? `Supplier invoice number ${extractedSuppliersInvoiceNumber}: ${describeGeneratedNumberClash(generatedNumberClash)}`
       : undefined;
     const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + reimbursementCodingNotes + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + generatedInvoiceNumberNotes + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatBreakdownRowNotes(breakdown.note) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;

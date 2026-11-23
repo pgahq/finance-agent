@@ -3453,7 +3453,7 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
   });
 
-  it('names a generated supplier invoice number from the date of service', async () => {
+  it('names a generated supplier invoice number from the invoice date, not the service date', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
 
@@ -3509,7 +3509,7 @@ describe('enrich_invoice', () => {
     } as any)).resolves.not.toThrow();
 
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(params.suppliersInvoiceNumber).toBe('RIVE031126');
+    expect(params.suppliersInvoiceNumber).toBe('RIVE031726');
 
   });
 
@@ -3575,7 +3575,7 @@ describe('enrich_invoice', () => {
   });
 
 
-  it('keeps a generated-form number when enrich reads a different service date (invoice-date form created earlier)', async () => {
+  it('keeps a service-date generated number create moved the invoice to after a sibling took the invoice-date number', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
 
@@ -3608,7 +3608,7 @@ describe('enrich_invoice', () => {
     });
 
     getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
-      invoice: { Invoice_ID: 'test-invoice-id', Invoice_Number: 'SUPIN-412727', Suppliers_Invoice_Number: 'RIVE031726', Attachment_Data: [] },
+      invoice: { Invoice_ID: 'test-invoice-id', Invoice_Number: 'SUPIN-412727', Suppliers_Invoice_Number: 'RIVE031126', Attachment_Data: [] },
       presignedAttachments: [{
         id: 'ocr-pdf',
         fileName: 'ocr.pdf',
@@ -3692,7 +3692,7 @@ describe('enrich_invoice', () => {
     } as any)).resolves.not.toThrow();
 
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(params.suppliersInvoiceNumber).toBe('RIVE031126');
+    expect(params.suppliersInvoiceNumber).toBe('RIVE031726');
 
   });
 

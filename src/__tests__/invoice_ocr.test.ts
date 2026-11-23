@@ -1445,10 +1445,11 @@ describe('invoice OCR pass', () => {
 });
 
 describe('service date reading', () => {
-  it('asks for a single date of service, including a shared line-item date, and never the invoice date', () => {
+  it('asks for the last service date when several are listed, and never the invoice date', () => {
     expect(invoiceOcrPrompt).toContain('extractedServiceDate');
-    expect(invoiceOcrPrompt).toContain('Date column of the line-item table when every line item shows that same single date');
+    expect(invoiceOcrPrompt).toContain('return the LAST one listed in the document; for a date range, return its end date');
     expect(invoiceOcrPrompt).toContain('never the service date');
+    expect(invoiceOcrPrompt).not.toContain('when every line item shows that same single date');
   });
 
   it('keeps the service date as a required string in the model schema and null in the merged result', () => {
