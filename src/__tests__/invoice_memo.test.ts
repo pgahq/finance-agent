@@ -12,7 +12,7 @@ import {
   sanitizeSuppliersInvoiceNumber,
   supplierNameForInvoiceNumber,
 } from '../lib/invoice_memo.js';
-import { formatMemoIdentifierNotes } from '../lib/invoice_enrichment.js';
+import { formatGeneratedInvoiceNumberNotes, formatMemoIdentifierNotes } from '../lib/invoice_enrichment.js';
 import type { FinalInvoiceLine } from '../lib/invoice_lines.js';
 
 describe('memo abbreviations', () => {
@@ -566,6 +566,35 @@ describe('service-date supplier invoice numbers', () => {
     expect(describeSuppliersInvoiceNumber({ invoiceNumber: '123', accountNumber: '123', invoiceDate: '2026-03-17' }))
       .toEqual({ number: '123MAR26', generated: true, basis: 'account' });
     expect(describeSuppliersInvoiceNumber({ supplierName: 'Riverton' })).toEqual({ generated: false });
+  });
+});
+
+describe('formatGeneratedInvoiceNumberNotes', () => {
+  it('says a number was named from the date of service', () => {
+    expect(formatGeneratedInvoiceNumberNotes({
+      number: 'RIVE031126',
+      basis: 'service_date',
+      baseNumber: 'RIVE031126',
+      serviceDate: '2026-03-11',
+    })).toBe('\n\nSupplier Invoice Number (no number printed; generated from the date of service 2026-03-11): RIVE031126');
+  });
+
+  it('explains a sibling suffix', () => {
+    expect(formatGeneratedInvoiceNumberNotes({
+      number: 'RIVE031126-2',
+      basis: 'service_date',
+      baseNumber: 'RIVE031126',
+      serviceDate: '2026-03-11',
+    })).toContain('RIVE031126 is already used by another invoice in this conversation, so this one is suffixed.');
+    expect(formatGeneratedInvoiceNumberNotes({ number: 'RIVE031726-3', basis: 'invoice_date', baseNumber: 'RIVE031726' }))
+      .toContain('generated from the invoice date): RIVE031726-3. RIVE031726 is already used');
+  });
+
+  it('adds nothing for printed numbers or the plain invoice-date and account forms', () => {
+    expect(formatGeneratedInvoiceNumberNotes({ number: 'INV-1', basis: 'printed', baseNumber: 'INV-1' })).toBe('');
+    expect(formatGeneratedInvoiceNumberNotes({ number: 'RIVE031726', basis: 'invoice_date', baseNumber: 'RIVE031726' })).toBe('');
+    expect(formatGeneratedInvoiceNumberNotes({ number: '123MAR26', basis: 'account', baseNumber: '123MAR26' })).toBe('');
+    expect(formatGeneratedInvoiceNumberNotes({})).toBe('');
   });
 });
 

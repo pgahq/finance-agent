@@ -457,6 +457,30 @@ export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): strin
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;
 }
 
+/**
+ * Says how a number the agent made up was chosen when that is not the plain invoice-date form: a number named from
+ * the date of service, or one suffixed because a sibling invoice in the conversation holds the base number.
+ */
+export function formatGeneratedInvoiceNumberNotes(generated: {
+  number?: string;
+  basis?: 'printed' | 'account' | 'service_date' | 'invoice_date';
+  /** The number before any sibling suffix. */
+  baseNumber?: string;
+  /** The date of service, YYYY-MM-DD, when the number was named from it. */
+  serviceDate?: string | null;
+}): string {
+  if (!generated.number || !generated.basis || generated.basis === 'printed') return '';
+  const suffixed = Boolean(generated.baseNumber && generated.baseNumber !== generated.number);
+  if (generated.basis !== 'service_date' && !suffixed) return '';
+  const origin = generated.basis === 'service_date'
+    ? `generated from the date of service ${generated.serviceDate ?? ''}`.trim()
+    : generated.basis === 'account'
+      ? 'generated from the account number'
+      : 'generated from the invoice date';
+  return `\n\nSupplier Invoice Number (no number printed; ${origin}): ${generated.number}`
+    + (suffixed ? `. ${generated.baseNumber} is already used by another invoice in this conversation, so this one is suffixed.` : '');
+}
+
 export function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedPurchaseOrderNumber) return '';
   return `\n\nPurchase Order Number (from document): ${result.extractedPurchaseOrderNumber}`;

@@ -36,7 +36,7 @@ import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
   hasMemoIdentifiers,
-  composeSuppliersInvoiceNumber,
+  describeSuppliersInvoiceNumber,
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
@@ -95,6 +95,10 @@ const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enab
 
 function invoiceNumberOf(invoice: { Invoice_Number?: unknown } | undefined): string | undefined {
   return typeof invoice?.Invoice_Number === 'string' && invoice.Invoice_Number ? invoice.Invoice_Number : undefined;
+}
+
+function invoiceNumberText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
@@ -256,16 +260,28 @@ async function processInvoice(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID ?? '(none - keeping existing)'}`);
 
-    const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
+    const composedSuppliersInvoiceNumber = describeSuppliersInvoiceNumber({
       invoiceNumber: result.extractedSuppliersInvoiceNumber,
       accountNumber: result.extractedAccountNumber,
       invoiceDate: extractedInvoiceDate,
+      serviceDate: normalizePrintedDate(result.extractedServiceDate),
       supplierName: supplierNameForInvoiceNumber(
         result.supplier.extractedInformation?.supplierName,
         result.supplier.resolvedSupplier?.supplierName,
         result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined,
       ),
     });
+    // The create path suffixes a number that a sibling invoice in the conversation already holds (FRIS111326-2).
+    // Writing the base number back would hit Workday's duplicate-number fault, so that invoice keeps its number.
+    const currentSuppliersInvoiceNumber = invoiceNumberText(detailedInvoice.Suppliers_Invoice_Number);
+    const keepsSiblingSuffix = Boolean(
+      composedSuppliersInvoiceNumber.generated
+      && composedSuppliersInvoiceNumber.number
+      && currentSuppliersInvoiceNumber
+      && currentSuppliersInvoiceNumber.startsWith(`${composedSuppliersInvoiceNumber.number}-`)
+      && /^\d+$/.test(currentSuppliersInvoiceNumber.slice(composedSuppliersInvoiceNumber.number.length + 1))
+    );
+    const extractedSuppliersInvoiceNumber = keepsSiblingSuffix ? undefined : composedSuppliersInvoiceNumber.number;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const currencyAmountTexts = [result.extractedAmountDue, result.extractedFreightAmount, result.extractedTaxAmount];
     const documentCurrency = detectInvoiceCurrency({ extractedCurrency: result.extractedCurrency, amountTexts: currencyAmountTexts }).code ?? undefined;

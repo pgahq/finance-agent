@@ -1,6 +1,8 @@
 import {
   acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
+  recordGeneratedInvoiceNumberInvoice,
+  reserveGeneratedInvoiceNumber,
   releaseConversationInvoiceClaim,
   upsertConversationSupplierInvoice,
 } from '../lib/conversation_invoices.js';
@@ -79,5 +81,86 @@ describe('conversation invoice claims', () => {
     const { db, query } = mockDb([]);
     await releaseConversationInvoiceClaim(db, '123', 'INV-100', 'token-1');
     expect(query).toHaveBeenCalledWith(expect.stringContaining('AND claim_token = $3'), ['123', 'INV-100', 'token-1']);
+  });
+});
+
+describe('reserveGeneratedInvoiceNumber', () => {
+  const params = { conversationId: '123', supplierWid: 'supplier-wid', baseNumber: 'ABCD031126', documentHash: 'h'.repeat(64) };
+
+  it('returns the number an earlier run gave the same document without inserting', async () => {
+    const { db, query } = mockDb([{ assigned_number: 'ABCD031126-2', workday_invoice_wid: 'invoice-wid' }]);
+
+    await expect(reserveGeneratedInvoiceNumber(db, params)).resolves.toEqual({
+      assignedNumber: 'ABCD031126-2',
+      reused: true,
+      workdayInvoiceWid: 'invoice-wid',
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('document_hash = $3'), ['123', 'supplier-wid', params.documentHash]);
+  });
+
+  it('takes the base number when it is free', async () => {
+    const query = jest.fn<Promise<unknown[]>, [string, unknown[]?]>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ assigned_number: 'ABCD031126' }]);
+    const db: DatabaseConnection = { query, close: jest.fn() };
+
+    await expect(reserveGeneratedInvoiceNumber(db, params)).resolves.toEqual({
+      assignedNumber: 'ABCD031126',
+      reused: false,
+      workdayInvoiceWid: null,
+    });
+    expect(query.mock.calls[1][0]).toContain('ON CONFLICT DO NOTHING');
+    expect(query.mock.calls[1][1]).toEqual(['123', 'supplier-wid', 'ABCD031126', 'ABCD031126', params.documentHash]);
+  });
+
+  it('walks to -2 and -3 while siblings hold the earlier numbers', async () => {
+    const query = jest.fn<Promise<unknown[]>, [string, unknown[]?]>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ assigned_number: 'ABCD031126-3' }]);
+    const db: DatabaseConnection = { query, close: jest.fn() };
+
+    await expect(reserveGeneratedInvoiceNumber(db, params)).resolves.toMatchObject({ assignedNumber: 'ABCD031126-3', reused: false });
+    const inserted = query.mock.calls.filter(([sql]) => sql.includes('INSERT')).map(([, values]) => values?.[2]);
+    expect(inserted).toEqual(['ABCD031126', 'ABCD031126-2', 'ABCD031126-3']);
+  });
+
+  it('returns the number a parallel run reserved for the same document', async () => {
+    const query = jest.fn<Promise<unknown[]>, [string, unknown[]?]>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ assigned_number: 'ABCD031126', workday_invoice_wid: null }]);
+    const db: DatabaseConnection = { query, close: jest.fn() };
+
+    await expect(reserveGeneratedInvoiceNumber(db, params)).resolves.toEqual({
+      assignedNumber: 'ABCD031126',
+      reused: true,
+      workdayInvoiceWid: null,
+    });
+  });
+
+  it('gives up instead of looping forever when every suffix is taken', async () => {
+    const { db } = mockDb([]);
+    await expect(reserveGeneratedInvoiceNumber(db, params)).rejects.toThrow('suffixes are taken');
+  });
+});
+
+describe('recordGeneratedInvoiceNumberInvoice', () => {
+  it('stores the Workday invoice on the reserved number', async () => {
+    const { db, query } = mockDb([]);
+    await recordGeneratedInvoiceNumberInvoice(db, {
+      conversationId: '123',
+      supplierWid: 'supplier-wid',
+      assignedNumber: 'ABCD031126-2',
+      workdayInvoiceWid: 'invoice-wid',
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE conversation_generated_invoice_numbers'),
+      ['123', 'supplier-wid', 'ABCD031126-2', 'invoice-wid']
+    );
   });
 });

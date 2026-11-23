@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import ExcelJS from 'exceljs';
 // create_invoice.ts reads WORKDAY_DEFAULT_COMPANY_NAME / WORKDAY_DEFAULT_SUPPLIER_WID /
 // INVOICE_MOD_ENABLED as module-level constants at import time. Each test sets the env
@@ -155,6 +156,12 @@ jest.mock('../lib/conversation_invoices.js', () => ({
   upsertConversationSupplierInvoice: jest.fn(),
   acquireConversationInvoiceClaim: jest.fn().mockResolvedValue(true),
   releaseConversationInvoiceClaim: jest.fn().mockResolvedValue(undefined),
+  reserveGeneratedInvoiceNumber: jest.fn().mockImplementation(async (_db: unknown, params: { baseNumber: string }) => ({
+    assignedNumber: params.baseNumber,
+    reused: false,
+    workdayInvoiceWid: null,
+  })),
+  recordGeneratedInvoiceNumberInvoice: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../lib/invoice_cluster_plans.js', () => ({
@@ -7199,6 +7206,179 @@ describe('create_invoice', () => {
       expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
       expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
       expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
+    });
+
+    describe('generated supplier invoice numbers', () => {
+      const unnumbered = {
+        ...baseEnrichmentResult,
+        extractedSuppliersInvoiceNumber: null,
+        extractedInvoiceDate: '2026-03-17',
+        extractedServiceDate: '2026-03-11',
+      };
+      const request = (name = 'invoice.pdf') => ({
+        ...attachmentRequest(`new-invoices/req-1/${name}`, name),
+        conversationId: '1234567890',
+      });
+      const documentHash = createHash('sha256').update('fake-pdf-content').digest('hex');
+
+      it('names the number from the date of service and reserves it for the document', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+
+        await processor({ data: [request()] } as any);
+
+        expect(registry.reserveGeneratedInvoiceNumber).toHaveBeenCalledWith(expect.anything(), {
+          conversationId: '1234567890',
+          supplierWid: 'supplier-wid-1',
+          baseNumber: 'TEST031126',
+          documentHash,
+        });
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
+        expect(submitArgs.buildNotes([])).toContain('generated from the date of service 2026-03-11): TEST031126');
+        expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(expect.anything(), {
+          conversationId: '1234567890',
+          supplierWid: 'supplier-wid-1',
+          assignedNumber: 'TEST031126',
+          workdayInvoiceWid: 'new-invoice-wid',
+        });
+        expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({ extracted: expect.objectContaining({ suppliersInvoiceNumber: 'TEST031126' }) }),
+        );
+      });
+
+      it('falls back to the invoice date when no service date was read', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedServiceDate: null });
+
+        await processor({ data: [request()] } as any);
+
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031726');
+        expect(submitArgs.buildNotes([])).not.toContain('no number printed');
+      });
+
+      it('submits the suffixed number a sibling forced and says why in the notes', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126-2',
+          reused: false,
+          workdayInvoiceWid: null,
+        });
+
+        await processor({ data: [request()] } as any);
+
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126-2');
+        expect(submitArgs.buildNotes([])).toContain('TEST031126 is already used by another invoice in this conversation');
+        expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ assignedNumber: 'TEST031126-2' })
+        );
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({ extracted: expect.objectContaining({ suppliersInvoiceNumber: 'TEST031126-2' }) }),
+        );
+      });
+
+      it('gives sibling invoices with different service dates their own numbers', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        for (const day of ['2026-03-11', '2026-03-12', '2026-03-13']) {
+          invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValueOnce({ ...unnumbered, extractedServiceDate: day });
+        }
+
+        await processor({ data: [request('a.pdf'), request('b.pdf'), request('c.pdf')] } as any);
+
+        expect(workday.submitNewSupplierInvoice.mock.calls.map((call: any[]) => call[1].suppliersInvoiceNumber))
+          .toEqual(['TEST031126', 'TEST031226', 'TEST031326']);
+      });
+
+      it('never reserves or suffixes a number printed on the document', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...unnumbered,
+          extractedSuppliersInvoiceNumber: 'INV-9',
+        });
+
+        await processor({ data: [request()] } as any);
+
+        expect(registry.reserveGeneratedInvoiceNumber).not.toHaveBeenCalled();
+        expect(registry.recordGeneratedInvoiceNumberInvoice).not.toHaveBeenCalled();
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].suppliersInvoiceNumber).toBe('INV-9');
+      });
+
+      it('creates with the base number and no reservation when there is no conversation', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+
+        await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+        expect(registry.reserveGeneratedInvoiceNumber).not.toHaveBeenCalled();
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].suppliersInvoiceNumber).toBe('TEST031126');
+      });
+
+      it('skips a re-triggered document whose invoice still exists', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126',
+          reused: true,
+          workdayInvoiceWid: wid,
+        });
+        workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+        await processor({ data: [request()] } as any);
+
+        expect(workday.getSupplierInvoiceEditability).toHaveBeenCalledWith(expect.anything(), wid);
+        expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        expect(registry.recordGeneratedInvoiceNumberInvoice).not.toHaveBeenCalled();
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({ skipped: true, invoiceWID: wid }),
+        );
+      });
+
+      it('creates again under the same number when AP canceled the earlier invoice', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126',
+          reused: true,
+          workdayInvoiceWid: wid,
+        });
+        workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, isCanceled: true, status: 'Canceled' });
+
+        await processor({ data: [request()] } as any);
+
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].suppliersInvoiceNumber).toBe('TEST031126');
+        expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ workdayInvoiceWid: 'new-invoice-wid' })
+        );
+      });
+
+      it('reports a registry warning when the new invoice cannot be recorded under its number', async () => {
+        const { processor, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.recordGeneratedInvoiceNumberInvoice.mockRejectedValue(new Error('db down'));
+
+        await processor({ data: [request()] } as any);
+
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({ registrySync: 'failed' }),
+        );
+      });
     });
 
     it('fails loudly when the editability check errors', async () => {

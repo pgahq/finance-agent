@@ -1,5 +1,5 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
 import { normalizePrintedDate } from './prompts/invoice_ocr_prompt.js';
 import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
@@ -18,6 +18,7 @@ import {
   formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatGeneratedInvoiceNumberNotes,
   formatFreeRowsNotes,
   formatLinePriceReviewNotes,
   formatLineTotalReviewNotes,
@@ -48,14 +49,16 @@ import { snapshotAgentWrite } from './lib/invoice_snapshots.js';
 import {
   acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
+  recordGeneratedInvoiceNumberInvoice,
   releaseConversationInvoiceClaim,
+  reserveGeneratedInvoiceNumber,
   upsertConversationSupplierInvoice,
   type ConversationSupplierInvoice,
 } from './lib/conversation_invoices.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
-  composeSuppliersInvoiceNumber,
+  describeSuppliersInvoiceNumber,
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
@@ -1063,10 +1066,12 @@ async function processInvoiceCluster(
       : undefined;
     const emailCompany = emailNamedCompany ?? formNamedCompany;
 
-    const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
+    const extractedServiceDate = normalizePrintedDate(result.extractedServiceDate) ?? undefined;
+    const composedSuppliersInvoiceNumber = describeSuppliersInvoiceNumber({
       invoiceNumber: result.extractedSuppliersInvoiceNumber,
       accountNumber: result.extractedAccountNumber,
       invoiceDate: extractedInvoiceDate,
+      serviceDate: extractedServiceDate,
       supplierName: supplierNameForInvoiceNumber(
         result.supplier.extractedInformation?.supplierName,
         result.supplier.resolvedSupplier?.supplierName,
@@ -1603,7 +1608,30 @@ async function processInvoiceCluster(
       ? reimbursementCodingNote(reimbursement, { companyFromForm: Boolean(formNamedCompany), defaultCompany: usedDefaultCompany })
       : '';
     const reimbursementCodingNotes = reimbursementCodingText ? `\n\n${reimbursementCodingText}` : '';
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + reimbursementCodingNotes + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    // Key resends on the number printed on the document, never a generated submit value: a number composed
+    // from the supplier name and date would give two unnumbered invoices on the same day one registry row.
+    const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
+    // A number the agent made up is reserved per source document within the conversation: sibling invoices that
+    // generate the same base get -2, -3 ..., and a re-trigger of the same document keeps its number.
+    const generatedNumberReservation = composedSuppliersInvoiceNumber.generated
+      && composedSuppliersInvoiceNumber.number
+      && conversationId
+      && !registryNumber
+      ? await reserveGeneratedInvoiceNumber(context.dbConnection, {
+        conversationId,
+        supplierWid: submitSupplierWID ?? '',
+        baseNumber: composedSuppliersInvoiceNumber.number,
+        documentHash: createHash('sha256').update(buffer).digest('hex'),
+      })
+      : undefined;
+    const extractedSuppliersInvoiceNumber = generatedNumberReservation?.assignedNumber ?? composedSuppliersInvoiceNumber.number;
+    const generatedInvoiceNumberNotes = formatGeneratedInvoiceNumberNotes({
+      number: extractedSuppliersInvoiceNumber,
+      basis: composedSuppliersInvoiceNumber.basis,
+      baseNumber: composedSuppliersInvoiceNumber.number,
+      serviceDate: extractedServiceDate,
+    });
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + reimbursementCodingNotes + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + generatedInvoiceNumberNotes + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1731,10 +1759,27 @@ async function processInvoiceCluster(
       ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 
+    // This document already produced an invoice under its reserved number. Resubmitting would only hit Workday's
+    // duplicate-number fault, and a suffix would make a second invoice, so nothing is written.
+    if (generatedNumberReservation?.reused && generatedNumberReservation.workdayInvoiceWid) {
+      const existingEditability = await getSupplierInvoiceEditability(context, generatedNumberReservation.workdayInvoiceWid);
+      const existingRemoved = !existingEditability.found || existingEditability.isCanceled || existingEditability.status === 'Canceled';
+      if (!existingRemoved) {
+        debug('Document already has an invoice under its generated number; skipping', {
+          conversationId,
+          suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
+        });
+        await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
+          ...sharedSlackDetails,
+          invoiceWID: generatedNumberReservation.workdayInvoiceWid,
+          skipped: true,
+          skipReason: `This document already has supplier invoice ${extractedSuppliersInvoiceNumber} in Workday from an earlier run for this conversation, so no new invoice was created.`,
+        }, conversationId, intercomAppId));
+        return;
+      }
+    }
+
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
-    // Key resends on the number printed on the document, never a generated submit value: a number composed
-    // from the supplier name and date would give two unnumbered invoices on the same day one registry row.
-    const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
     const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
     const clusterFilesReceivedAt = clusterMaxReceivedAt(loaded);
 
@@ -2008,6 +2053,23 @@ async function processInvoiceCluster(
       })
       : false;
     let registrySyncFailed = false;
+    if (generatedNumberReservation && conversationId && extractedSuppliersInvoiceNumber) {
+      if (!createOutcome.invoiceWID) {
+        registrySyncFailed = true;
+      } else {
+        try {
+          await recordGeneratedInvoiceNumberInvoice(context.dbConnection, {
+            conversationId,
+            supplierWid: submitSupplierWID ?? '',
+            assignedNumber: extractedSuppliersInvoiceNumber,
+            workdayInvoiceWid: createOutcome.invoiceWID,
+          });
+        } catch (error) {
+          debug('Failed to record the invoice under its generated number:', error);
+          registrySyncFailed = true;
+        }
+      }
+    }
     if (trackResends && conversationId && registryNumber) {
       if (!createOutcome.invoiceWID) {
         registrySyncFailed = true;
