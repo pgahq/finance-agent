@@ -275,7 +275,7 @@ async function processInvoice(
       ),
     });
     // Create makes up a number from the invoice date, moves to the service date when a sibling holds it, and
-    // suffixes a remaining duplicate (FRIS111326-2). Enrich never reserves and can read a different date, so it
+    // suffixes a remaining duplicate (RIVE111326-2). Enrich never reserves and can read a different date, so it
     // keeps any number already in that generated form for this supplier
     // prefix instead of renaming the invoice or colliding with a sibling. Account-number invoices keep a base-N suffix.
     const currentSuppliersInvoiceNumber = invoiceNumberText(detailedInvoice.Suppliers_Invoice_Number);
