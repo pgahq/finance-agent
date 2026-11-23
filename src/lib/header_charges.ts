@@ -401,11 +401,61 @@ function describeCharges(candidates: TaxCandidate[]): string {
   return candidates.map(candidate => `"${printable(candidate.label)}" ${formatChargeDollars(candidate.cents / 100)}`).join(' and ');
 }
 
+/** The printed total of the line rows, as OCR read it. */
+export interface PrintedLineSubtotal {
+  label?: string | null;
+  amount?: string | null;
+}
+
+// Printed tax-like rows that could join header tax: label says tax, not payroll or employment tax, a positive
+// amount, not a restatement of the tax already read, and one entry per label and amount.
+function printedTaxCandidates(input: {
+  charges?: PrintedCharge[] | null;
+  lines: ExtractedInvoiceLine[];
+  poLines?: PayrollTaxContext['poLines'];
+  taxLabel?: string | null;
+  currentTaxCents: number;
+}): TaxCandidate[] {
+  const seen = new Set<string>();
+  const candidates: TaxCandidate[] = [];
+  for (const charge of input.charges ?? []) {
+    if (!isTaxLikeChargeLabel(charge.label)) continue;
+    if (isPayrollTaxCharge(charge.label, { lines: input.lines, poLines: input.poLines })) continue;
+    const amount = parseCanonicalChargeAmount(charge.amount);
+    if (amount == null || amount <= 0) continue;
+    const cents = toCents(amount);
+    if (restatesHeaderTax(charge.label, cents, input.taxLabel, input.currentTaxCents)) continue;
+    const key = `${normalizeLabel(charge.label)}|${cents}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ label: charge.label, cents });
+  }
+  return candidates;
+}
+
+// Every candidate when together they are the gap (state + county + city), else the one candidate that is the gap.
+function candidatesClosingGap(candidates: TaxCandidate[], gapCents: number): TaxCandidate[] {
+  const allCents = candidates.reduce((total, candidate) => total + candidate.cents, 0);
+  return candidates.length && allCents === gapCents
+    ? candidates
+    : candidates.filter(candidate => candidate.cents === gapCents).slice(0, 1);
+}
+
+// The printed line total counts as evidence only when it is labeled, parses to a positive amount, and no deposit,
+// payment, retainage, or balance is printed (those make the amount due something other than total + tax).
+function printedSubtotalCents(subtotal: PrintedLineSubtotal | null | undefined, settlementPrinted: boolean | undefined): number | undefined {
+  if (settlementPrinted || !subtotal?.label?.trim()) return undefined;
+  const amount = chargeAmount(subtotal.amount);
+  return amount != null && amount > 0 ? toCents(amount) : undefined;
+}
+
 /**
- * Adds printed tax-like charges to the header tax amount, but only when lines + freight + tax fall
- * short of the amount due by exactly those charges. A rate is never turned into an amount, a charge
- * that repeats the tax already read is skipped, payroll or employment tax is never header tax, and any
- * other gap is left for the amount check.
+ * Adds printed tax-like charges to the header tax amount. A printed tax row beside the main one (a city or
+ * county tax under the state tax) joins when the charges are exactly what is missing, judged two ways:
+ * lines + freight + tax fall short of the amount due by those charges, or, when the lines are not trustworthy,
+ * the printed line subtotal + freight + tax fall short of the amount due by those charges. A rate is never turned
+ * into an amount, a charge that repeats the tax already read is skipped, payroll or employment tax is never
+ * header tax, and any other gap is left for the amount check.
  */
 export function applyPrintedTaxCharges(input: {
   charges?: PrintedCharge[] | null;
@@ -418,13 +468,41 @@ export function applyPrintedTaxCharges(input: {
   chargeWithheld?: boolean;
   /** PO lines, so a payroll recharge PO keeps a bare tax row out of header tax. */
   poLines?: PayrollTaxContext['poLines'];
+  /** The total the document prints for its line rows; lets the printed figures decide when the lines do not add up. */
+  lineSubtotal?: PrintedLineSubtotal | null;
+  /** A deposit, prior payment, retainage, or balance due is printed, so the subtotal is not compared with the amount due. */
+  settlementPrinted?: boolean;
 }): AppliedTaxCharges {
   const unchanged: AppliedTaxCharges = { taxAmount: input.tax, taxCleared: input.taxCleared };
   if (input.chargeWithheld || !input.charges?.length || input.lines.length === 0) return unchanged;
-  if (chargeAmount(input.amountDue) == null) return unchanged;
+  const amountDue = chargeAmount(input.amountDue);
+  if (amountDue == null) return unchanged;
 
   const currentTax = input.taxCleared ? 0 : (chargeAmount(input.tax) ?? 0);
   const currentTaxCents = toCents(currentTax);
+  const candidates = printedTaxCandidates({
+    charges: input.charges,
+    lines: input.lines,
+    poLines: input.poLines,
+    taxLabel: input.taxLabel,
+    currentTaxCents,
+  });
+  if (candidates.length === 0) return unchanged;
+
+  const printedTax = currentTaxCents > 0
+    ? `${input.taxLabel ? `"${printable(input.taxLabel)}" ` : ''}${formatChargeDollars(currentTax)}`
+    : undefined;
+  const result = (applied: TaxCandidate[], message: string): AppliedTaxCharges => {
+    const addedCents = applied.reduce((total, candidate) => total + candidate.cents, 0);
+    const described = describeCharges(applied);
+    return {
+      taxAmount: ((currentTaxCents + addedCents) / 100).toFixed(2),
+      taxCleared: false,
+      message: message.replace('{charges}', () => described),
+      breakdown: [printedTax, described].filter(Boolean).join(' + '),
+    };
+  };
+
   const { merchandiseLines } = splitFreightLines(input.lines);
   const totals = reconcileSubmittedCharges(
     merchandiseLines,
@@ -433,39 +511,139 @@ export function applyPrintedTaxCharges(input: {
   ).unreconciled;
   if (!totals) return unchanged;
   const gapCents = toCents(totals.amountDue) - toCents(totals.lineTotal) - toCents(totals.freight) - toCents(totals.tax);
-  if (gapCents <= 0) return unchanged;
-
-  const seen = new Set<string>();
-  const candidates: TaxCandidate[] = [];
-  for (const charge of input.charges) {
-    if (!isTaxLikeChargeLabel(charge.label)) continue;
-    if (isPayrollTaxCharge(charge.label, { lines: input.lines, poLines: input.poLines })) continue;
-    const amount = parseCanonicalChargeAmount(charge.amount);
-    if (amount == null || amount <= 0) continue;
-    const cents = toCents(amount);
-    if (restatesHeaderTax(charge.label, cents, input.taxLabel, currentTaxCents)) continue;
-    const key = `${normalizeLabel(charge.label)}|${cents}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push({ label: charge.label, cents });
+  if (gapCents > 0) {
+    const applied = candidatesClosingGap(candidates, gapCents);
+    if (applied.length) {
+      return result(applied, 'Added {charges} to header Tax_Amount so lines, freight, and tax equal the amount due.');
+    }
   }
 
-  const allCents = candidates.reduce((total, candidate) => total + candidate.cents, 0);
-  const applied = candidates.length && allCents === gapCents
-    ? candidates
-    : candidates.filter(candidate => candidate.cents === gapCents).slice(0, 1);
+  // The lines are off (a duplicated or mispriced row), so they cannot say what tax is missing. The printed
+  // subtotal can: it is the figure the document's own tax and amount due were computed from.
+  const subtotalCents = printedSubtotalCents(input.lineSubtotal, input.settlementPrinted);
+  if (subtotalCents == null) return unchanged;
+  const freightCents = toCents(chargeAmount(input.freight) ?? 0);
+  const subtotalGapCents = toCents(amountDue) - subtotalCents - freightCents - currentTaxCents;
+  if (subtotalGapCents <= 0) return unchanged;
+  const applied = candidatesClosingGap(candidates, subtotalGapCents);
   if (applied.length === 0) return unchanged;
+  const label = printable(input.lineSubtotal?.label);
+  return result(
+    applied,
+    `Added {charges} to header Tax_Amount so the printed "${label}" ${formatChargeDollars(subtotalCents / 100)}, freight, and tax equal the amount due. The invoice lines did not match that subtotal and are checked separately.`
+  );
+}
 
-  const newTax = (currentTaxCents + gapCents) / 100;
-  const described = describeCharges(applied);
-  const printedTax = currentTaxCents > 0
-    ? `${input.taxLabel ? `"${printable(input.taxLabel)}" ` : ''}${formatChargeDollars(currentTax)}`
-    : undefined;
+export interface RemovedBreakdownRows<T extends ExtractedInvoiceLine> {
+  lines: T[];
+  removed: T[];
+  /** Review sentence naming the rows left off and the printed total the rest reconcile to. */
+  note?: string;
+}
+
+interface BreakdownGroup {
+  parent: number;
+  children: number[];
+}
+
+const BREAKDOWN_MIN_CHILDREN = 2;
+const BREAKDOWN_MAX_GROUPS = 10;
+const BREAKDOWN_ROWS_LISTED = 5;
+
+function sameSection(a: ExtractedInvoiceLine, b: ExtractedInvoiceLine): boolean {
+  return (a.tableNumber ?? null) === (b.tableNumber ?? null)
+    && (a.sectionLabel?.trim() ?? '') === (b.sectionLabel?.trim() ?? '');
+}
+
+/**
+ * A priced row followed by its own breakdown (a usage total with its tier rows under it) bills the same charge
+ * twice when both are booked. Each parent row whose next rows, in the same table and section, add up to its
+ * amount exactly is a candidate; the breakdown rows are removed only when that, and nothing else, makes the lines
+ * equal what the document prints: the line subtotal, or without one, the amount due less freight, tax, and every
+ * printed tax row. A coincidental sum on an invoice whose lines already reconcile, several ways to reconcile, or a
+ * printed deposit, payment, or retainage leaves every row in place for the amount check. The parent stays because
+ * it names the service and is the single sum.
+ */
+export function removeBreakdownRows<T extends ExtractedInvoiceLine>(lines: T[], input: {
+  lineSubtotal?: PrintedLineSubtotal | null;
+  amountDue?: string | null;
+  /** Header freight and tax as they will be submitted (undefined when cleared). */
+  freight?: string | null;
+  tax?: string | null;
+  taxLabel?: string | null;
+  printedTaxCharges?: PrintedCharge[] | null;
+  settlementPrinted?: boolean;
+  poLines?: PayrollTaxContext['poLines'];
+}): RemovedBreakdownRows<T> {
+  const unchanged: RemovedBreakdownRows<T> = { lines, removed: [] };
+  if (input.settlementPrinted || lines.length < BREAKDOWN_MIN_CHILDREN + 1) return unchanged;
+  if (lines.some(line => !line.description?.trim())) return unchanged;
+  const amounts = lines.map(line => signedChargeLineAmount(line));
+  if (amounts.some(amount => amount == null)) return unchanged;
+  const cents = amounts.map(amount => toCents(amount as number));
+  const totalCents = cents.reduce((sum, value) => sum + value, 0);
+
+  const printedSubtotal = printedSubtotalCents(input.lineSubtotal, input.settlementPrinted);
+  let targetCents = printedSubtotal;
+  let targetText = printedSubtotal == null ? '' : `the printed "${printable(input.lineSubtotal?.label)}" ${formatChargeDollars(printedSubtotal / 100)}`;
+  if (targetCents == null) {
+    const amountDue = chargeAmount(input.amountDue);
+    if (amountDue == null) return unchanged;
+    const headerTaxCents = toCents(chargeAmount(input.tax) ?? 0);
+    const printedTaxCents = printedTaxCandidates({
+      charges: input.printedTaxCharges,
+      lines,
+      poLines: input.poLines,
+      taxLabel: input.taxLabel,
+      currentTaxCents: headerTaxCents,
+    }).reduce((sum, candidate) => sum + candidate.cents, 0);
+    targetCents = toCents(amountDue) - toCents(chargeAmount(input.freight) ?? 0) - headerTaxCents - printedTaxCents;
+    targetText = `the amount due less freight and tax, ${formatChargeDollars(targetCents / 100)}`;
+  }
+  if (targetCents <= 0 || totalCents <= targetCents) return unchanged;
+
+  const groupable = (index: number) => cents[index] > 0
+    && lines[index].hasDiscount !== true
+    && !lines[index].pinnedPurchaseOrderLineId;
+  const groups: BreakdownGroup[] = [];
+  for (let parent = 0; parent < lines.length; parent += 1) {
+    if (!groupable(parent)) continue;
+    const children: number[] = [];
+    let sum = 0;
+    for (let next = parent + 1; next < lines.length && sum < cents[parent]; next += 1) {
+      if (cents[next] === 0) continue;
+      if (!groupable(next) || !sameSection(lines[parent], lines[next])) break;
+      children.push(next);
+      sum += cents[next];
+    }
+    if (sum === cents[parent] && children.length >= BREAKDOWN_MIN_CHILDREN) groups.push({ parent, children });
+  }
+  if (groups.length === 0 || groups.length > BREAKDOWN_MAX_GROUPS) return unchanged;
+
+  const outcomes = new Map<string, { groups: BreakdownGroup[]; removed: Set<number> }>();
+  for (let mask = 1; mask < 1 << groups.length; mask += 1) {
+    const chosen = groups.filter((_, bit) => mask & (1 << bit));
+    const removed = new Set(chosen.flatMap(group => group.children));
+    if (chosen.some(group => removed.has(group.parent))) continue;
+    const remainingCents = cents.reduce((sum, value, index) => (removed.has(index) ? sum : sum + value), 0);
+    if (remainingCents !== targetCents) continue;
+    outcomes.set([...removed].sort((a, b) => a - b).join(','), { groups: chosen, removed });
+  }
+  if (outcomes.size !== 1) return unchanged;
+
+  const { groups: chosen, removed } = [...outcomes.values()][0];
+  const describeRow = (index: number) => `"${printable(lines[index].description)}" ${formatChargeDollars(cents[index] / 100)}`;
+  const listed = (indexes: number[]) => {
+    const shown = indexes.slice(0, BREAKDOWN_ROWS_LISTED).map(describeRow);
+    const more = indexes.length - shown.length;
+    return more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
+  };
+  const parts = chosen.map(group => `${describeRow(group.parent)} is already the sum of ${listed(group.children)}`);
+  const remainingTotal = formatChargeDollars((totalCents - [...removed].reduce((sum, index) => sum + cents[index], 0)) / 100);
   return {
-    taxAmount: newTax.toFixed(2),
-    taxCleared: false,
-    message: `Added ${described} to header Tax_Amount so lines, freight, and tax equal the amount due.`,
-    breakdown: [printedTax, described].filter(Boolean).join(' + '),
+    lines: lines.filter((_, index) => !removed.has(index)),
+    removed: lines.filter((_, index) => removed.has(index)),
+    note: `Left off ${removed.size === 1 ? 'row' : 'rows'} that break down a charge printed above ${removed.size === 1 ? 'it' : 'them'}: ${parts.join('; ')}. With ${removed.size === 1 ? 'it' : 'them'} left off the lines total ${remainingTotal}, ${targetText}.`,
   };
 }
 
@@ -1091,9 +1269,9 @@ export interface SinglePriceChargeContext {
 }
 
 // The printed subtotal counts only when it is labeled, no deposit, payment, or balance is printed, and it plus the
-// header freight and tax is exactly the amount due, so it cannot be a subtotal that leaves a charge out or one that
-// already contains the tax.
-function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | undefined {
+// header freight and tax (the main tax row and every printed tax-like row beside it) is exactly the amount due, so
+// it cannot be a subtotal that leaves a charge out or one that already contains the tax.
+function pretaxSubtotalFor(context: SinglePriceChargeContext, lines: ExtractedInvoiceLine[]): PretaxSubtotal | undefined {
   const label = context.lineSubtotal?.label?.trim();
   if (!label || context.settlementPrinted) return undefined;
   const amountDue = chargeAmount(context.amountDue);
@@ -1102,10 +1280,16 @@ function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | 
   if (amountDue == null || subtotal == null || tax == null || subtotal <= 0 || tax <= 0) return undefined;
   const freight = context.freightCleared ? 0 : chargeAmount(context.freight) ?? 0;
   const cents = Math.round(subtotal * 100);
-  const taxCents = Math.round(tax * 100);
+  const headerTaxCents = Math.round(tax * 100);
   const amountDueCents = Math.round(amountDue * 100);
-  if (cents + taxCents + Math.round(freight * 100) !== amountDueCents) return undefined;
-  return { label, cents, taxCents, amountDueCents };
+  const beforeTax = cents + Math.round(freight * 100);
+  if (beforeTax + headerTaxCents === amountDueCents) return { label, cents, taxCents: headerTaxCents, amountDueCents };
+  const additional = candidatesClosingGap(
+    printedTaxCandidates({ charges: context.printedTaxCharges, lines, taxLabel: context.taxLabel, currentTaxCents: headerTaxCents }),
+    amountDueCents - beforeTax - headerTaxCents
+  );
+  const taxCents = headerTaxCents + additional.reduce((total, candidate) => total + candidate.cents, 0);
+  return additional.length && beforeTax + taxCents === amountDueCents ? { label, cents, taxCents, amountDueCents } : undefined;
 }
 
 /** Whether the document or email prints a deposit, a payment already received, retainage, or a remaining balance. */
@@ -1164,6 +1348,6 @@ export function reinterpretSinglePriceLinesForCharges(
   };
   return reinterpretSinglePriceLines(lines, reconciles, {
     allowExtension: !context.settlementPrinted,
-    pretaxSubtotal: pretaxSubtotalFor(context),
+    pretaxSubtotal: pretaxSubtotalFor(context, lines),
   });
 }
