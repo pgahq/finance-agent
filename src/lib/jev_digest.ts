@@ -1,10 +1,11 @@
-import { categoryOf, entryOutcome, type CancelAttribution, type Outcome } from './invoice_score.js';
+import { categoryOf, entryOutcome, type CancelAttribution, type ChangeCategory, type Outcome, type ScoredChange } from './invoice_score.js';
 import type { InvoiceScore } from './invoice_scores.js';
-import { BASIS_LABELS, OUTCOME_LABELS, invoiceLink, percent, plural, section } from './score_digest.js';
+import { BASIS_LABELS, OUTCOME_LABELS, changeText, invoiceLink, percent, plural, section } from './score_digest.js';
 import type { SlackBlock } from './slack.js';
 import { touchCalloutBlocks, touchCount, type TouchCallout } from './score_touches.js';
 
 const MAX_DISAGREEMENTS = 5;
+const MAX_RECLASSIFIED_PER_DIRECTION = 3;
 
 /**
  * The score as Jev decided it: Jev's changes, outcome, and cancel attribution where it made them, and the official
@@ -31,6 +32,14 @@ interface Disagreement {
   text: string;
 }
 
+/** An agent-owned change whose category Jev set differently from the static field list. */
+export interface Reclassification {
+  score: InvoiceScore;
+  change: ScoredChange;
+  from: ChangeCategory;
+  to: ChangeCategory;
+}
+
 export interface JevComparison {
   /** Invoices with a stored Jev verdict. */
   compared: number;
@@ -39,6 +48,7 @@ export interface JevComparison {
   cancels: { agree: number; of: number };
   voidOrCredit: { agree: number; of: number };
   categories: { reclassified: number; of: number };
+  reclassifications: Reclassification[];
   disagreements: Disagreement[];
 }
 
@@ -58,6 +68,7 @@ export function compareJev(scores: InvoiceScore[]): JevComparison {
     cancels: { agree: 0, of: 0 },
     voidOrCredit: { agree: 0, of: 0 },
     categories: { reclassified: 0, of: 0 },
+    reclassifications: [],
     disagreements: [],
   };
   for (const score of scores) {
@@ -98,7 +109,11 @@ export function compareJev(scores: InvoiceScore[]): JevComparison {
     for (const change of [...(shadow.entryDiff ?? []), ...(shadow.lateDiff ?? [])]) {
       if (!change.jev || !change.agentOwned) continue;
       comparison.categories.of += 1;
-      if (change.category !== categoryOf(change.field)) comparison.categories.reclassified += 1;
+      const from = categoryOf(change.field);
+      if (change.category !== from) {
+        comparison.categories.reclassified += 1;
+        comparison.reclassifications.push({ score, change, from, to: change.category });
+      }
     }
 
     if (shadow.cancel?.confidence !== undefined && (score.outcome === 'canceled' || score.outcome === 'deleted')) {
@@ -120,7 +135,34 @@ export function compareJev(scores: InvoiceScore[]): JevComparison {
     }
   }
   comparison.disagreements.sort((a, b) => b.weight - a.weight);
+  comparison.reclassifications.sort((a, b) => certainty(b) - certainty(a));
   return comparison;
+}
+
+/** How far Jev leaned toward the category it picked; each group holds one direction, so this ranks within it. */
+function certainty(item: Reclassification): number {
+  const probability = item.change.jev?.probability ?? 0.5;
+  return item.to === 'material' ? probability : 1 - probability;
+}
+
+function reclassificationLines(comparison: JevComparison): string[] {
+  const lines: string[] = [];
+  for (const [from, to] of [['material', 'convention'], ['convention', 'material']] as const) {
+    const matching = comparison.reclassifications.filter((item) => item.from === from && item.to === to);
+    if (!matching.length) continue;
+    lines.push(
+      to === 'convention'
+        ? '_Rules: material (counts against the agent). Jev: convention (AP preference, not an agent miss)_'
+        : '_Rules: convention (ignored). Jev: material (AP fixed an agent mistake)_'
+    );
+    for (const item of matching.slice(0, MAX_RECLASSIFIED_PER_DIRECTION)) {
+      const verdict = item.to === 'material' ? 'an agent error' : 'AP preference';
+      const probability = item.change.jev ? ` · Jev ${percent(certainty(item))} sure it was ${verdict}` : '';
+      lines.push(`• ${invoiceLink(item.score)} · ${changeText(item.change)}${probability}`);
+    }
+    if (matching.length > MAX_RECLASSIFIED_PER_DIRECTION) lines.push(`…and ${matching.length - MAX_RECLASSIFIED_PER_DIRECTION} more`);
+  }
+  return lines;
 }
 
 function line(label: string, agree: number, of: number, noun: string): string | undefined {
@@ -171,5 +213,7 @@ export function buildJevReplyBlocks({ ruleCallout, jevCallout, scores }: JevRepl
     const more = comparison.disagreements.length - disagreements.length;
     blocks.push(section(`*Largest disagreements*\n${disagreements.join('\n')}${more > 0 ? `\n…and ${more} more` : ''}`));
   }
+  const reclassified = reclassificationLines(comparison);
+  if (reclassified.length) blocks.push(section(`*Material vs convention: examples*\n${reclassified.join('\n')}`));
   return blocks;
 }
