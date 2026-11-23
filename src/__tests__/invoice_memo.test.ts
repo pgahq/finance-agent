@@ -583,25 +583,28 @@ describe('formatGeneratedInvoiceNumberNotes', () => {
     })).toBe('\n\nSupplier Invoice Number (no number printed; generated from the date of service 2026-03-11): RIVE031126');
   });
 
-  it('explains a move to the service date after a sibling took the invoice-date number', () => {
+  it('explains a move to the service date without naming the invoice-date number a sibling may vacate', () => {
     const note = formatGeneratedInvoiceNumberNotes({
       number: 'RIVE031126',
       basis: 'service_date',
       serviceDate: '2026-03-11',
-      clash: serviceDateClash,
+      clash: { ...serviceDateClash, invoiceDate: '2026-03-17' },
     });
     expect(note).toContain('generated from the date of service 2026-03-11): RIVE031126.');
-    expect(note).toContain('Another invoice in this conversation also generated RIVE031726 (same supplier and invoice date), so this one uses the date of service.');
-    expect(note).toContain('Check this is not a resend of RIVE031726 before submitting.');
+    expect(note).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number, so this one uses the date of service.');
+    expect(note).toContain('Check this is not a resend of another invoice from this supplier dated 2026-03-17 before submitting.');
+    expect(note).not.toContain('RIVE031726');
   });
 
-  it('says plainly when the invoice that holds the clashed number has the same amount due', () => {
-    expect(formatGeneratedInvoiceNumberNotes({
+  it('says plainly when the invoice it clashed with has the same amount due', () => {
+    const note = formatGeneratedInvoiceNumberNotes({
       number: 'RIVE031126',
       basis: 'service_date',
       serviceDate: '2026-03-11',
-      clash: { ...serviceDateClash, amountDue: '1350.00', clashedAmountDue: '1350.00' },
-    })).toContain('RIVE031726 has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
+      clash: { ...serviceDateClash, invoiceDate: '2026-03-17', amountDue: '1350.00', clashedAmountDue: '1350.00' },
+    });
+    expect(note).toContain('It has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
+    expect(note).not.toContain('RIVE031726');
   });
 
   it('explains a sibling suffix', () => {

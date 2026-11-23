@@ -1662,6 +1662,7 @@ async function processInvoiceCluster(
         documentHash: generatedNumberDocumentHash,
         assignedNumber: generatedNumberReservation.assignedNumber,
         alternateNumber: composedSuppliersInvoiceNumber.serviceDateNumber,
+        amountDue: result.extractedAmountDue,
       })
       : undefined;
     const extractedSuppliersInvoiceNumber = settledNumber?.assignedNumber ?? generatedNumberReservation?.assignedNumber ?? composedSuppliersInvoiceNumber.number;
@@ -1672,11 +1673,18 @@ async function processInvoiceCluster(
     const generatedNumberBasis = takenServiceDateNumber ? 'service_date' : composedSuppliersInvoiceNumber.basis;
     const amountDueKey = generatedNumberAmountKey(result.extractedAmountDue);
     const generatedNumberClash: GeneratedInvoiceNumberClash | undefined = settledNumber?.moved && composedSuppliersInvoiceNumber.number
-      ? { clashedNumber: composedSuppliersInvoiceNumber.number, suffixed: false, amountDue: amountDueKey }
+      ? {
+        clashedNumber: composedSuppliersInvoiceNumber.number,
+        suffixed: false,
+        invoiceDate: extractedInvoiceDate,
+        amountDue: amountDueKey,
+        clashedAmountDue: settledNumber.sameAmountSibling ? amountDueKey : null,
+      }
       : generatedNumberReservation?.clashedNumber
         ? {
           clashedNumber: generatedNumberReservation.clashedNumber,
           suffixed: Boolean(generatedNumberReservation.suffixed),
+          invoiceDate: extractedInvoiceDate,
           amountDue: amountDueKey,
           clashedAmountDue: generatedNumberReservation.clashedAmountDue,
         }

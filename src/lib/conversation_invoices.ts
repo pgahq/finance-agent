@@ -295,11 +295,20 @@ export async function reserveGeneratedInvoiceNumber(
  * sibling clashed with it since, so a batch of same-date invoices ends up with service-date numbers instead of one
  * invoice-date number among them. Best effort: it moves only a reservation no invoice has been created from, and
  * only when the alternate is free; a sibling that arrives after the invoice is submitted cannot change it.
+ * `sameAmountSibling` says whether another invoice that generated the same default number has the same amount due,
+ * so the note can ask AP to rule out a resend without naming the number this invoice just left.
  */
 export async function settleGeneratedInvoiceNumber(
   db: DatabaseConnection,
-  params: { conversationId: string; supplierWid: string; documentHash: string; assignedNumber: string; alternateNumber: string }
-): Promise<{ assignedNumber: string; moved: boolean }> {
+  params: {
+    conversationId: string;
+    supplierWid: string;
+    documentHash: string;
+    assignedNumber: string;
+    alternateNumber: string;
+    amountDue?: string | null;
+  }
+): Promise<{ assignedNumber: string; moved: boolean; sameAmountSibling?: boolean }> {
   const { conversationId, supplierWid, documentHash, assignedNumber, alternateNumber } = params;
   const unchanged = { assignedNumber, moved: false };
   if (assignedNumber === alternateNumber) return unchanged;
@@ -316,7 +325,17 @@ export async function settleGeneratedInvoiceNumber(
         RETURNING assigned_number`,
       [conversationId, supplierWid, documentHash, assignedNumber, alternateNumber]
     )) as GeneratedInvoiceNumberRow[];
-    return moved.length ? { assignedNumber: alternateNumber, moved: true } : unchanged;
+    if (!moved.length) return unchanged;
+    const amountDue = generatedNumberAmountKey(params.amountDue);
+    const siblings = amountDue
+      ? (await db.query(
+        `SELECT assigned_number FROM conversation_generated_invoice_numbers
+          WHERE conversation_id = $1 AND supplier_wid = $2 AND base_number = $3 AND document_hash <> $4 AND amount_due = $5
+          LIMIT 1`,
+        [conversationId, supplierWid, assignedNumber, documentHash, amountDue]
+      )) as GeneratedInvoiceNumberRow[]
+      : [];
+    return { assignedNumber: alternateNumber, moved: true, sameAmountSibling: siblings.length > 0 };
   } catch (error) {
     // A sibling took the alternate between the check and the update (unique violation): keep the current number.
     if ((error as { code?: string } | undefined)?.code === '23505') return unchanged;

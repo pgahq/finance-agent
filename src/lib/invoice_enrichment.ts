@@ -458,28 +458,37 @@ export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): strin
 }
 
 export interface GeneratedInvoiceNumberClash {
-  /** The number this invoice generated first that another invoice in the conversation holds. */
+  /** The number this invoice generated first that another invoice in the conversation held when it clashed. */
   clashedNumber: string;
   /** True when a -2, -3 suffix was needed, false when this invoice moved to its service-date number. */
   suffixed: boolean;
-  /** The amount due of this invoice and of the invoice holding the clashed number, as generatedNumberAmountKey. */
+  /** The invoice date, YYYY-MM-DD, that this invoice shares with the invoice it clashed with. */
+  invoiceDate?: string | null;
+  /** The amount due of this invoice and of the invoice it clashed with, as generatedNumberAmountKey. */
   amountDue?: string | null;
   clashedAmountDue?: string | null;
 }
 
 /**
  * The sentence for AP when a number the agent made up clashed with another invoice of the conversation, ending
- * with the request to rule out a resend (plainly, when the amount due matches). Shared by the invoice note and
- * the Slack review line.
+ * with the request to rule out a resend (plainly, when the amount due matches). Shared by the invoice note and the
+ * Slack review line. A service-date move names the supplier, invoice date, and amount due the two invoices share,
+ * never the invoice-date number: the invoice that held it may move to its own service-date number afterwards, so
+ * no invoice may end up carrying it. A suffix names the number, which keeps its holder.
  */
 export function describeGeneratedNumberClash(clash: GeneratedInvoiceNumberClash): string {
   const sameAmount = Boolean(clash.amountDue && clash.amountDue === clash.clashedAmountDue);
-  const reason = clash.suffixed
-    ? `${clash.clashedNumber} is already used by another invoice in this conversation, so this one is suffixed.`
-    : `Another invoice in this conversation also generated ${clash.clashedNumber} (same supplier and invoice date), so this one uses the date of service.`;
+  if (clash.suffixed) {
+    const resend = sameAmount
+      ? `${clash.clashedNumber} has the same amount due ($${clash.amountDue}). Check this is not a resend of that invoice before submitting.`
+      : `Check this is not a resend of ${clash.clashedNumber} before submitting.`;
+    return `${clash.clashedNumber} is already used by another invoice in this conversation, so this one is suffixed. ${resend}`;
+  }
+  const dated = clash.invoiceDate ? ` dated ${clash.invoiceDate}` : '';
+  const reason = `Another invoice in this conversation from this supplier${dated} was generated the same invoice-date number, so this one uses the date of service.`;
   const resend = sameAmount
-    ? `${clash.clashedNumber} has the same amount due ($${clash.amountDue}). Check this is not a resend of that invoice before submitting.`
-    : `Check this is not a resend of ${clash.clashedNumber} before submitting.`;
+    ? `It has the same amount due ($${clash.amountDue}). Check this is not a resend of that invoice before submitting.`
+    : `Check this is not a resend of another invoice from this supplier${dated} before submitting.`;
   return `${reason} ${resend}`;
 }
 

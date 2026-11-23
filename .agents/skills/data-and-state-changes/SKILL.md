@@ -61,7 +61,7 @@ to the holder's service-date number when that number is free.
 `findGeneratedInvoicesForDocument` finds the same document under another
 supplier. It is created at cold start after the claims table, and the
 `contested` column is added with `ADD COLUMN IF NOT EXISTS`.
-Conversations processed before this table existed have no rows.
+`settleGeneratedInvoiceNumber` also reports whether another row that started from the same default number has the same amount due, so the holder's note can say so. The row is reserved early in the run, before the model calls, so a run that throws or hits the Lambda timeout leaves a row with no `workday_invoice_wid`. It is not released: the error path cannot tell a run that never created an invoice from one that created it and failed to record it, and a retry of the same file reuses the row. A sibling that clashes with such an orphan takes its service-date number, and its note asks AP to rule out a resend of an invoice that may not exist. Conversations processed before this table existed have no rows.
 
 `invoice_cluster_plans` (primary key `plan_id` plus `cluster_index`;
 `conversation_id`, `file_names` JSONB, `status` pending/processing/done/failed,

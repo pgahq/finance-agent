@@ -60,9 +60,24 @@ describeWithPostgres('generated invoice number reservation (Postgres)', () => {
       assignedNumber: 'ABCD031726',
       alternateNumber: `ABCD03${days[holderIndex]}26`,
     });
-    expect(settled).toEqual({ assignedNumber: `ABCD03${days[holderIndex]}26`, moved: true });
+    expect(settled).toEqual({ assignedNumber: `ABCD03${days[holderIndex]}26`, moved: true, sameAmountSibling: false });
     const rows = await pool.query('SELECT assigned_number FROM conversation_generated_invoice_numbers ORDER BY assigned_number');
     expect(rows.rows.map((row) => row.assigned_number)).toEqual(days.map((day) => `ABCD03${day}26`));
+  });
+
+  it('tells a settled holder whether a sibling that generated the same number has the same amount due', async () => {
+    await reserve('a', { candidates: ['ABCD031726', 'ABCD031126'], amountDue: '$1,350.00' });
+    await reserve('b', { candidates: ['ABCD031726', 'ABCD031226'], amountDue: '1350' });
+
+    const settled = await settleGeneratedInvoiceNumber(db, {
+      conversationId: 'conv-1',
+      supplierWid: 'supplier-1',
+      documentHash: 'a'.padEnd(64, '0'),
+      assignedNumber: 'ABCD031726',
+      alternateNumber: 'ABCD031126',
+      amountDue: '$1,350.00',
+    });
+    expect(settled).toEqual({ assignedNumber: 'ABCD031126', moved: true, sameAmountSibling: true });
   });
 
   it('returns the same number for the same document, even when this run generated other candidates', async () => {

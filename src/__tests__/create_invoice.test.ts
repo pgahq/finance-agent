@@ -7294,7 +7294,8 @@ describe('create_invoice', () => {
         expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
         const notes = submitArgs.buildNotes([]);
         expect(notes).toContain('generated from the date of service 2026-03-11): TEST031126.');
-        expect(notes).toContain('Another invoice in this conversation also generated TEST031726 (same supplier and invoice date), so this one uses the date of service.');
+        expect(notes).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number, so this one uses the date of service.');
+        expect(notes).not.toContain('TEST031726');
         expect(registry.settleGeneratedInvoiceNumber).not.toHaveBeenCalled();
         expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
           expect.anything(), expect.objectContaining({ assignedNumber: 'TEST031126' })
@@ -7303,7 +7304,7 @@ describe('create_invoice', () => {
           'create_invoice', 'success', expect.any(Number),
           expect.objectContaining({
             extracted: expect.objectContaining({ suppliersInvoiceNumber: 'TEST031126' }),
-            lineReview: expect.arrayContaining([expect.stringContaining('Supplier invoice number TEST031126: Another invoice in this conversation also generated TEST031726')]),
+            lineReview: expect.arrayContaining([expect.stringContaining('Supplier invoice number TEST031126: Another invoice in this conversation from this supplier dated 2026-03-17')]),
           }),
         );
       });
@@ -7322,12 +7323,16 @@ describe('create_invoice', () => {
           documentHash,
           assignedNumber: 'TEST031726',
           alternateNumber: 'TEST031126',
+          amountDue: unnumbered.extractedAmountDue,
         });
         const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
         expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
         const notes = submitArgs.buildNotes([]);
         expect(notes).toContain('generated from the date of service 2026-03-11): TEST031126.');
-        expect(notes).toContain('also generated TEST031726');
+        expect(notes).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number');
+        expect(notes).toContain('Check this is not a resend of another invoice from this supplier dated 2026-03-17 before submitting.');
+        // The invoice that held the number may move on too, so the note must not name a number nobody keeps.
+        expect(notes).not.toContain('TEST031726');
         expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
           expect.anything(), expect.objectContaining({ assignedNumber: 'TEST031126' })
         );
@@ -7364,7 +7369,20 @@ describe('create_invoice', () => {
         await processor({ data: [request()] } as any);
 
         expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]))
-          .toContain('Another invoice in this conversation also generated TEST031726');
+          .toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number');
+      });
+
+      it('tells the settled holder when a sibling has the same amount due', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedAmountDue: '$1,350.00' });
+        registry.settleGeneratedInvoiceNumber.mockResolvedValue({ assignedNumber: 'TEST031126', moved: true, sameAmountSibling: true });
+
+        await processor({ data: [request()] } as any);
+
+        const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+        expect(notes).toContain('It has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
+        expect(notes).not.toContain('TEST031726');
       });
 
       it('does not settle a document that already held its number from an earlier run', async () => {
@@ -7524,7 +7542,7 @@ describe('create_invoice', () => {
         await processor({ data: [request()] } as any);
 
         expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]))
-          .toContain('TEST031726 has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
+          .toContain('It has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
       });
 
       it('skips a document whose earlier invoice is live under another supplier', async () => {
