@@ -3399,6 +3399,250 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
   });
 
+  it('names a generated supplier invoice number from the date of service', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Riverton Fire Department',
+          memo: 'Utility bill'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: null,
+      extractedInvoiceDate: '2026-03-17',
+      extractedServiceDate: '2026-03-11',
+    });
+
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: { Invoice_ID: 'test-invoice-id', Invoice_Number: 'SUPIN-412727',  Attachment_Data: [] },
+      presignedAttachments: [{
+        id: 'ocr-pdf',
+        fileName: 'ocr.pdf',
+        contentType: 'application/pdf',
+        presignedUrl: 'https://example.com/ocr.pdf',
+        expiresAt: new Date('2026-05-12T00:00:00Z'),
+        s3Key: 'attachments/test-invoice-id/ocr.pdf',
+        buffer: Buffer.from('ocr-pdf')
+      }]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.suppliersInvoiceNumber).toBe('RIVE031126');
+
+  });
+
+
+  it('keeps the sibling suffix the create path gave a generated supplier invoice number', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Riverton Fire Department',
+          memo: 'Utility bill'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: null,
+      extractedInvoiceDate: '2026-03-17',
+      extractedServiceDate: '2026-03-11',
+    });
+
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: { Invoice_ID: 'test-invoice-id', Invoice_Number: 'SUPIN-412727', Suppliers_Invoice_Number: 'RIVE031126-2', Attachment_Data: [] },
+      presignedAttachments: [{
+        id: 'ocr-pdf',
+        fileName: 'ocr.pdf',
+        contentType: 'application/pdf',
+        presignedUrl: 'https://example.com/ocr.pdf',
+        expiresAt: new Date('2026-05-12T00:00:00Z'),
+        s3Key: 'attachments/test-invoice-id/ocr.pdf',
+        buffer: Buffer.from('ocr-pdf')
+      }]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.suppliersInvoiceNumber).toBeUndefined();
+
+  });
+
+
+  it('keeps a generated-form number when enrich reads a different service date (invoice-date form created earlier)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Riverton Fire Department',
+          memo: 'Utility bill'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: null,
+      extractedInvoiceDate: '2026-03-17',
+      extractedServiceDate: '2026-03-11',
+    });
+
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: { Invoice_ID: 'test-invoice-id', Invoice_Number: 'SUPIN-412727', Suppliers_Invoice_Number: 'RIVE031726', Attachment_Data: [] },
+      presignedAttachments: [{
+        id: 'ocr-pdf',
+        fileName: 'ocr.pdf',
+        contentType: 'application/pdf',
+        presignedUrl: 'https://example.com/ocr.pdf',
+        expiresAt: new Date('2026-05-12T00:00:00Z'),
+        s3Key: 'attachments/test-invoice-id/ocr.pdf',
+        buffer: Buffer.from('ocr-pdf')
+      }]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.suppliersInvoiceNumber).toBeUndefined();
+
+  });
+
+
+  it('still replaces a different number on the invoice with the generated one', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Riverton Fire Department',
+          memo: 'Utility bill'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: null,
+      extractedInvoiceDate: '2026-03-17',
+      extractedServiceDate: '2026-03-11',
+    });
+
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: { Invoice_ID: 'test-invoice-id', Invoice_Number: 'SUPIN-412727', Suppliers_Invoice_Number: 'OLD-1', Attachment_Data: [] },
+      presignedAttachments: [{
+        id: 'ocr-pdf',
+        fileName: 'ocr.pdf',
+        contentType: 'application/pdf',
+        presignedUrl: 'https://example.com/ocr.pdf',
+        expiresAt: new Date('2026-05-12T00:00:00Z'),
+        s3Key: 'attachments/test-invoice-id/ocr.pdf',
+        buffer: Buffer.from('ocr-pdf')
+      }]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.suppliersInvoiceNumber).toBe('RIVE031126');
+
+  });
+
+
   it('reports the timestamped supplier invoice number after a duplicate retry', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

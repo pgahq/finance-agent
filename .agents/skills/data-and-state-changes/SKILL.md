@@ -40,6 +40,17 @@ conversation plus number, `claim_token`, `claimed_at`; a claim older than 15
 minutes can be taken over), claimed before the registry read and released by
 token afterwards.
 
+`conversation_generated_invoice_numbers` (primary key conversation, supplier
+WID, `assigned_number`; `UNIQUE (conversation_id, supplier_wid, document_hash)`;
+`base_number`, `document_hash` SHA-256 of the document, `amount_due` normalized
+printed amount used to flag a suffixed resend, `workday_invoice_wid`)
+reserves agent-generated supplier invoice numbers. `reserveGeneratedInvoiceNumber`
+inserts the base number, then `base-2`, `base-3` on conflict, so parallel
+sibling clusters never pick the same number; a document hash already reserved
+returns its earlier number. `recordGeneratedInvoiceNumberInvoice` stores the
+Workday WID after create. `findGeneratedInvoicesForDocument` finds the same document under another supplier. It is created at cold start after the claims table.
+Conversations processed before this table existed have no rows.
+
 `invoice_cluster_plans` (primary key `plan_id` plus `cluster_index`;
 `conversation_id`, `file_names` JSONB, `status` pending/processing/done/failed,
 `workday_invoice_wid`, `claimed_at`) records each grouped create-invoice

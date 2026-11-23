@@ -845,6 +845,7 @@ export function reimbursementOcr(reimbursement: AppliedReimbursement): InvoiceOc
     extractedSupplierReferenceKind: null,
     extractedCustomerId: null,
     extractedServicePeriod: null,
+    extractedServiceDate: null,
     extractedPaymentTerms: null,
     invoiceLineQuantityDisplayed: false,
     extractedInvoiceLines: [{
@@ -865,7 +866,6 @@ export function reimbursementOcr(reimbursement: AppliedReimbursement): InvoiceOc
       website: null,
       taxId: null,
       industry: null,
-      contactPerson: null,
       memo: null,
       remitToAddress: null,
     },

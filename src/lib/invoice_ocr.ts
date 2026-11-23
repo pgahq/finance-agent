@@ -359,6 +359,7 @@ export function mergeInvoiceEnrichment(
       extractedSupplierReferenceKind: null,
       extractedCustomerId: null,
       extractedServicePeriod: null,
+      extractedServiceDate: null,
       invoiceLineQuantityDisplayed: false,
       extractedInvoiceLines: null,
     };
@@ -376,7 +377,7 @@ export function mergeInvoiceEnrichment(
         taxId: printed.taxId,
         website: printed.website,
         industry: printed.industry,
-        contactPerson: printed.contactPerson,
+        contactPerson: null,
         memo: printed.memo,
       },
     },
@@ -407,6 +408,7 @@ export function mergeInvoiceEnrichment(
     extractedSupplierReferenceKind: ocr.extractedSupplierReferenceKind,
     extractedCustomerId: ocr.extractedCustomerId,
     extractedServicePeriod: ocr.extractedServicePeriod,
+    extractedServiceDate: ocr.extractedServiceDate,
     extractedPaymentTerms: ocr.extractedPaymentTerms
       ? { name: ocr.extractedPaymentTerms.name, workdayId: matching.extractedPaymentTerms?.workdayId ?? null }
       : null,
