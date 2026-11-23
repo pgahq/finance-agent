@@ -268,15 +268,15 @@ async function processInvoice(
       invoiceNumber: result.extractedSuppliersInvoiceNumber,
       accountNumber: result.extractedAccountNumber,
       invoiceDate: extractedInvoiceDate,
-      serviceDate: normalizePrintedDate(result.extractedServiceDate),
       supplierName: supplierNameForInvoiceNumber(
         result.supplier.extractedInformation?.supplierName,
         result.supplier.resolvedSupplier?.supplierName,
         result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined,
       ),
     });
-    // Create makes up a number from a model-read service date and suffixes a sibling's duplicate (FRIS111326-2).
-    // Enrich can read a different date, so it keeps any number already in that generated form for this supplier
+    // Create makes up a number from the invoice date, moves to the service date when a sibling holds it, and
+    // suffixes a remaining duplicate (FRIS111326-2). Enrich never reserves and can read a different date, so it
+    // keeps any number already in that generated form for this supplier
     // prefix instead of renaming the invoice or colliding with a sibling. Account-number invoices keep a base-N suffix.
     const currentSuppliersInvoiceNumber = invoiceNumberText(detailedInvoice.Suppliers_Invoice_Number);
     const composedNumber = composedSuppliersInvoiceNumber.number;

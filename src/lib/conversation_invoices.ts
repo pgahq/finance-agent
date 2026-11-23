@@ -120,10 +120,15 @@ export interface GeneratedInvoiceNumberReservation {
   /** The Workday invoice an earlier run created from this document under the number, if it recorded one. */
   workdayInvoiceWid: string | null;
   /**
-   * The amount due (see generatedNumberAmountKey) stored for the invoice that holds the base number, set only
-   * when this document was suffixed. Lets the note say plainly when the suffixed invoice looks like a resend.
+   * The number this document generated first that a sibling already held, set when this document was given a
+   * later candidate or a suffix: the first candidate for a later candidate, the last candidate for a suffix.
    */
-  baseAmountDue?: string | null;
+  clashedNumber?: string;
+  /**
+   * The amount due (see generatedNumberAmountKey) stored for the invoice that holds `clashedNumber`. Lets the
+   * note say plainly when this invoice looks like a resend of that one.
+   */
+  clashedAmountDue?: string | null;
 }
 
 interface GeneratedInvoiceNumberRow {
@@ -165,21 +170,21 @@ export async function findGeneratedInvoicesForDocument(
 // A conversation has a handful of invoices, so this only bounds a runaway loop.
 const MAX_GENERATED_NUMBER_SUFFIX = 50;
 
-function suffixedNumber(base: string, attempt: number): string {
-  return attempt === 1 ? base : `${base}-${attempt}`;
-}
-
 /**
  * Reserves the supplier invoice number for a document whose number the agent made up. A document that already
- * holds a number in this conversation and supplier keeps it, whatever base this run generated, so a re-trigger
- * never moves an invoice to a new number. Otherwise the base is taken when free, else the first free -2, -3 ...
- * suffix. The insert is atomic, so parallel runs for sibling invoices never get the same number.
+ * holds a number in this conversation and supplier keeps it, whatever this run generated, so a re-trigger never
+ * moves an invoice to a new number. Otherwise the first free candidate is taken (the invoice-date number, then the
+ * service-date number), else the first free -2, -3 ... suffix of the last candidate. The insert is atomic, so
+ * parallel runs for sibling invoices never get the same number. Each clash marks the holder's row contested, so
+ * the holder can still move to its own alternate before it submits (see settleGeneratedInvoiceNumber).
  */
 export async function reserveGeneratedInvoiceNumber(
   db: DatabaseConnection,
-  params: { conversationId: string; supplierWid: string; baseNumber: string; documentHash: string; amountDue?: string | null }
+  params: { conversationId: string; supplierWid: string; candidates: string[]; documentHash: string; amountDue?: string | null }
 ): Promise<GeneratedInvoiceNumberReservation> {
-  const { conversationId, supplierWid, baseNumber, documentHash } = params;
+  const { conversationId, supplierWid, documentHash } = params;
+  const candidates = [...new Set(params.candidates.filter(Boolean))];
+  if (!candidates.length) throw new Error('Could not reserve a supplier invoice number: no candidate number was given');
   const amountDue = generatedNumberAmountKey(params.amountDue);
   const findByDocument = async (): Promise<GeneratedInvoiceNumberReservation | undefined> => {
     const rows = (await db.query(
@@ -193,34 +198,105 @@ export async function reserveGeneratedInvoiceNumber(
       ? { assignedNumber: rows[0].assigned_number, reused: true, workdayInvoiceWid: rows[0].workday_invoice_wid }
       : undefined;
   };
-
-  const existing = await findByDocument();
-  if (existing) return existing;
-
-  for (let attempt = 1; attempt <= MAX_GENERATED_NUMBER_SUFFIX; attempt += 1) {
-    const candidate = suffixedNumber(baseNumber, attempt);
+  const holderAmountDue = async (assignedNumber: string): Promise<string | null> => {
+    const rows = (await db.query(
+      `SELECT amount_due FROM conversation_generated_invoice_numbers
+        WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $3`,
+      [conversationId, supplierWid, assignedNumber]
+    )) as GeneratedInvoiceNumberRow[];
+    return rows[0]?.amount_due ?? null;
+  };
+  // The conflict was either the number (a sibling holds it) or this document (a parallel run just reserved it).
+  const tryReserve = async (
+    assignedNumber: string
+  ): Promise<{ reserved: true } | { reserved: false; raced?: GeneratedInvoiceNumberReservation }> => {
     const inserted = (await db.query(
       `INSERT INTO conversation_generated_invoice_numbers
          (conversation_id, supplier_wid, assigned_number, base_number, document_hash, amount_due)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING
        RETURNING assigned_number`,
-      [conversationId, supplierWid, candidate, baseNumber, documentHash, amountDue]
+      [conversationId, supplierWid, assignedNumber, candidates[0], documentHash, amountDue]
     )) as GeneratedInvoiceNumberRow[];
-    if (inserted.length) {
-      if (attempt === 1) return { assignedNumber: candidate, reused: false, workdayInvoiceWid: null };
-      const baseRows = (await db.query(
-        `SELECT amount_due FROM conversation_generated_invoice_numbers
-          WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $3`,
-        [conversationId, supplierWid, baseNumber]
-      )) as GeneratedInvoiceNumberRow[];
-      return { assignedNumber: candidate, reused: false, workdayInvoiceWid: null, baseAmountDue: baseRows[0]?.amount_due ?? null };
-    }
-    // The conflict was either the number (a sibling holds it) or this document (a parallel run just reserved it).
+    if (inserted.length) return { reserved: true };
     const raced = await findByDocument();
-    if (raced) return raced;
+    if (raced) return { reserved: false, raced };
+    await db.query(
+      `UPDATE conversation_generated_invoice_numbers SET contested = TRUE
+        WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $3`,
+      [conversationId, supplierWid, assignedNumber]
+    );
+    return { reserved: false };
+  };
+
+  const existing = await findByDocument();
+  if (existing) return existing;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const result = await tryReserve(candidates[index]);
+    if (result.reserved) {
+      if (index === 0) return { assignedNumber: candidates[index], reused: false, workdayInvoiceWid: null };
+      return {
+        assignedNumber: candidates[index],
+        reused: false,
+        workdayInvoiceWid: null,
+        clashedNumber: candidates[0],
+        clashedAmountDue: await holderAmountDue(candidates[0]),
+      };
+    }
+    if (result.raced) return result.raced;
   }
-  throw new Error(`Could not reserve a supplier invoice number for ${baseNumber}: ${MAX_GENERATED_NUMBER_SUFFIX} suffixes are taken in this conversation`);
+
+  const suffixBase = candidates[candidates.length - 1];
+  for (let attempt = 2; attempt <= MAX_GENERATED_NUMBER_SUFFIX; attempt += 1) {
+    const candidate = `${suffixBase}-${attempt}`;
+    const result = await tryReserve(candidate);
+    if (result.reserved) {
+      return {
+        assignedNumber: candidate,
+        reused: false,
+        workdayInvoiceWid: null,
+        clashedNumber: suffixBase,
+        clashedAmountDue: await holderAmountDue(suffixBase),
+      };
+    }
+    if (result.raced) return result.raced;
+  }
+  throw new Error(`Could not reserve a supplier invoice number for ${suffixBase}: ${MAX_GENERATED_NUMBER_SUFFIX} suffixes are taken in this conversation`);
+}
+
+/**
+ * Lets the invoice that took the default number move to its own alternate (the service-date number) when a
+ * sibling clashed with it since, so a batch of same-date invoices ends up with service-date numbers instead of one
+ * invoice-date number among them. Best effort: it moves only a reservation no invoice has been created from, and
+ * only when the alternate is free; a sibling that arrives after the invoice is submitted cannot change it.
+ */
+export async function settleGeneratedInvoiceNumber(
+  db: DatabaseConnection,
+  params: { conversationId: string; supplierWid: string; documentHash: string; assignedNumber: string; alternateNumber: string }
+): Promise<{ assignedNumber: string; moved: boolean }> {
+  const { conversationId, supplierWid, documentHash, assignedNumber, alternateNumber } = params;
+  const unchanged = { assignedNumber, moved: false };
+  if (assignedNumber === alternateNumber) return unchanged;
+  try {
+    const moved = (await db.query(
+      `UPDATE conversation_generated_invoice_numbers
+          SET assigned_number = $5, contested = FALSE, updated_at = CURRENT_TIMESTAMP
+        WHERE conversation_id = $1 AND supplier_wid = $2 AND document_hash = $3 AND assigned_number = $4
+          AND contested AND workday_invoice_wid IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_generated_invoice_numbers
+             WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $5
+          )
+        RETURNING assigned_number`,
+      [conversationId, supplierWid, documentHash, assignedNumber, alternateNumber]
+    )) as GeneratedInvoiceNumberRow[];
+    return moved.length ? { assignedNumber: alternateNumber, moved: true } : unchanged;
+  } catch (error) {
+    // A sibling took the alternate between the check and the update (unique violation): keep the current number.
+    if ((error as { code?: string } | undefined)?.code === '23505') return unchanged;
+    throw error;
+  }
 }
 
 /** Records the Workday invoice created under a reserved number so a re-trigger can tell it already exists. */

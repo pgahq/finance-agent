@@ -42,13 +42,21 @@ token afterwards.
 
 `conversation_generated_invoice_numbers` (primary key conversation, supplier
 WID, `assigned_number`; `UNIQUE (conversation_id, supplier_wid, document_hash)`;
-`base_number`, `document_hash` SHA-256 of the document, `amount_due` normalized
-printed amount used to flag a suffixed resend, `workday_invoice_wid`)
-reserves agent-generated supplier invoice numbers. `reserveGeneratedInvoiceNumber`
-inserts the base number, then `base-2`, `base-3` on conflict, so parallel
-sibling clusters never pick the same number; a document hash already reserved
-returns its earlier number. `recordGeneratedInvoiceNumberInvoice` stores the
-Workday WID after create. `findGeneratedInvoicesForDocument` finds the same document under another supplier. It is created at cold start after the claims table.
+`base_number` the first candidate (the invoice-date number), `document_hash`
+SHA-256 of the document, `amount_due` normalized printed amount used to flag a
+suffixed resend, `contested` set on the row of a number a sibling tried to take,
+`workday_invoice_wid`) reserves agent-generated supplier invoice numbers.
+`reserveGeneratedInvoiceNumber` takes ordered candidates (invoice-date number,
+then service-date number) and inserts the first free one, then `-2`, `-3` on
+the last candidate on conflict, so parallel sibling clusters never pick the same
+number; each clash marks the holder's row `contested`. A document hash already
+reserved returns its earlier number whatever candidates this run generated.
+`settleGeneratedInvoiceNumber` renames a contested row (no Workday invoice yet)
+to the holder's service-date number when that number is free.
+`recordGeneratedInvoiceNumberInvoice` stores the Workday WID after create.
+`findGeneratedInvoicesForDocument` finds the same document under another
+supplier. It is created at cold start after the claims table, and the
+`contested` column is added with `ADD COLUMN IF NOT EXISTS`.
 Conversations processed before this table existed have no rows.
 
 `invoice_cluster_plans` (primary key `plan_id` plus `cluster_index`;

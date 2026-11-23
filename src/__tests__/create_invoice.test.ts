@@ -156,10 +156,14 @@ jest.mock('../lib/conversation_invoices.js', () => ({
   upsertConversationSupplierInvoice: jest.fn(),
   acquireConversationInvoiceClaim: jest.fn().mockResolvedValue(true),
   releaseConversationInvoiceClaim: jest.fn().mockResolvedValue(undefined),
-  reserveGeneratedInvoiceNumber: jest.fn().mockImplementation(async (_db: unknown, params: { baseNumber: string }) => ({
-    assignedNumber: params.baseNumber,
+  reserveGeneratedInvoiceNumber: jest.fn().mockImplementation(async (_db: unknown, params: { candidates: string[] }) => ({
+    assignedNumber: params.candidates[0],
     reused: false,
     workdayInvoiceWid: null,
+  })),
+  settleGeneratedInvoiceNumber: jest.fn().mockImplementation(async (_db: unknown, params: { assignedNumber: string }) => ({
+    assignedNumber: params.assignedNumber,
+    moved: false,
   })),
   recordGeneratedInvoiceNumberInvoice: jest.fn().mockResolvedValue(undefined),
   findGeneratedInvoicesForDocument: jest.fn().mockResolvedValue([]),
@@ -7223,7 +7227,7 @@ describe('create_invoice', () => {
       });
       const documentHash = createHash('sha256').update('fake-pdf-content').digest('hex');
 
-      it('names the number from the date of service and reserves it for the document', async () => {
+      it('names the number from the invoice date and reserves it with the service-date alternate', async () => {
         const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
         invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
         invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
@@ -7233,7 +7237,7 @@ describe('create_invoice', () => {
         expect(registry.reserveGeneratedInvoiceNumber).toHaveBeenCalledWith(expect.anything(), {
           conversationId: '1234567890',
           supplierWid: 'supplier-wid-1',
-          baseNumber: 'TEST031126',
+          candidates: ['TEST031726', 'TEST031126'],
           documentHash,
           amountDue: unnumbered.extractedAmountDue,
         });
@@ -7243,31 +7247,101 @@ describe('create_invoice', () => {
           documentHash,
         });
         const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
-        expect(submitArgs.buildNotes([])).toContain('generated from the date of service 2026-03-11): TEST031126');
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031726');
+        expect(submitArgs.buildNotes([])).not.toContain('no number printed');
         expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(expect.anything(), {
           conversationId: '1234567890',
           supplierWid: 'supplier-wid-1',
-          assignedNumber: 'TEST031126',
+          assignedNumber: 'TEST031726',
           workdayInvoiceWid: 'new-invoice-wid',
         });
         expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
         expect(slack.notifyResult).toHaveBeenCalledWith(
           'create_invoice', 'success', expect.any(Number),
-          expect.objectContaining({ extracted: expect.objectContaining({ suppliersInvoiceNumber: 'TEST031126' }) }),
+          expect.objectContaining({ extracted: expect.objectContaining({ suppliersInvoiceNumber: 'TEST031726' }) }),
         );
       });
 
-      it('falls back to the invoice date when no service date was read', async () => {
-        const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      it('reserves only the invoice-date number when no service date was read', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
         invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
         invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedServiceDate: null });
 
         await processor({ data: [request()] } as any);
 
+        expect(registry.reserveGeneratedInvoiceNumber).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ candidates: ['TEST031726'] }));
+        expect(registry.settleGeneratedInvoiceNumber).not.toHaveBeenCalled();
         const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
         expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031726');
         expect(submitArgs.buildNotes([])).not.toContain('no number printed');
+      });
+
+      it('uses the service-date number a sibling forced and says why in the notes and Slack', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126',
+          reused: false,
+          workdayInvoiceWid: null,
+          clashedNumber: 'TEST031726',
+          clashedAmountDue: null,
+        });
+
+        await processor({ data: [request()] } as any);
+
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
+        const notes = submitArgs.buildNotes([]);
+        expect(notes).toContain('generated from the date of service 2026-03-11): TEST031126.');
+        expect(notes).toContain('Another invoice in this conversation also generated TEST031726 (same supplier and invoice date), so this one uses the date of service.');
+        expect(registry.settleGeneratedInvoiceNumber).not.toHaveBeenCalled();
+        expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ assignedNumber: 'TEST031126' })
+        );
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice', 'success', expect.any(Number),
+          expect.objectContaining({
+            extracted: expect.objectContaining({ suppliersInvoiceNumber: 'TEST031126' }),
+            lineReview: expect.arrayContaining([expect.stringContaining('Supplier invoice number TEST031126: Another invoice in this conversation also generated TEST031726')]),
+          }),
+        );
+      });
+
+      it('moves the holder of the invoice-date number to its service-date number once a sibling clashed', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.settleGeneratedInvoiceNumber.mockResolvedValue({ assignedNumber: 'TEST031126', moved: true });
+
+        await processor({ data: [request()] } as any);
+
+        expect(registry.settleGeneratedInvoiceNumber).toHaveBeenCalledWith(expect.anything(), {
+          conversationId: '1234567890',
+          supplierWid: 'supplier-wid-1',
+          documentHash,
+          assignedNumber: 'TEST031726',
+          alternateNumber: 'TEST031126',
+        });
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
+        const notes = submitArgs.buildNotes([]);
+        expect(notes).toContain('generated from the date of service 2026-03-11): TEST031126.');
+        expect(notes).toContain('also generated TEST031726');
+        expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ assignedNumber: 'TEST031126' })
+        );
+      });
+
+      it('does not settle a document that already held its number from an earlier run', async () => {
+        const { processor, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({ assignedNumber: 'TEST031726', reused: true, workdayInvoiceWid: null });
+
+        await processor({ data: [request()] } as any);
+
+        expect(registry.settleGeneratedInvoiceNumber).not.toHaveBeenCalled();
       });
 
       it('submits the suffixed number a sibling forced and says why in the notes', async () => {
@@ -7278,6 +7352,8 @@ describe('create_invoice', () => {
           assignedNumber: 'TEST031126-2',
           reused: false,
           workdayInvoiceWid: null,
+          clashedNumber: 'TEST031126',
+          clashedAmountDue: null,
         });
 
         await processor({ data: [request()] } as any);
@@ -7294,17 +7370,36 @@ describe('create_invoice', () => {
         );
       });
 
-      it('gives sibling invoices with different service dates their own numbers', async () => {
-        const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      it('suffixes the invoice-date number when there is no service date and a sibling holds it', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
         invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-        for (const day of ['2026-03-11', '2026-03-12', '2026-03-13']) {
-          invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValueOnce({ ...unnumbered, extractedServiceDate: day });
-        }
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedServiceDate: null });
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031726-2',
+          reused: false,
+          workdayInvoiceWid: null,
+          clashedNumber: 'TEST031726',
+          clashedAmountDue: null,
+        });
 
-        await processor({ data: [request('a.pdf'), request('b.pdf'), request('c.pdf')] } as any);
+        await processor({ data: [request()] } as any);
 
-        expect(workday.submitNewSupplierInvoice.mock.calls.map((call: any[]) => call[1].suppliersInvoiceNumber))
-          .toEqual(['TEST031126', 'TEST031226', 'TEST031326']);
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031726-2');
+        expect(submitArgs.buildNotes([])).toContain('generated from the invoice date): TEST031726-2. TEST031726 is already used');
+      });
+
+      it('names a document with no invoice date from its service date', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedInvoiceDate: null });
+
+        await processor({ data: [request()] } as any);
+
+        expect(registry.reserveGeneratedInvoiceNumber).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ candidates: ['TEST031126'] }));
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
+        expect(submitArgs.buildNotes([])).toContain('generated from the date of service 2026-03-11): TEST031126');
       });
 
       it('never reserves or suffixes a number printed on the document', async () => {
@@ -7330,7 +7425,7 @@ describe('create_invoice', () => {
         await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
 
         expect(registry.reserveGeneratedInvoiceNumber).not.toHaveBeenCalled();
-        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].suppliersInvoiceNumber).toBe('TEST031126');
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].suppliersInvoiceNumber).toBe('TEST031726');
       });
 
       it('skips a re-triggered document whose invoice still exists', async () => {
@@ -7363,7 +7458,8 @@ describe('create_invoice', () => {
           assignedNumber: 'TEST031126-2',
           reused: false,
           workdayInvoiceWid: null,
-          baseAmountDue: '1350.00',
+          clashedNumber: 'TEST031126',
+          clashedAmountDue: '1350.00',
         });
 
         await processor({ data: [request()] } as any);
@@ -7372,8 +7468,26 @@ describe('create_invoice', () => {
         expect(notes).toContain('TEST031126 has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
         expect(slack.notifyResult).toHaveBeenCalledWith(
           'create_invoice', 'success', expect.any(Number),
-          expect.objectContaining({ lineReview: expect.arrayContaining([expect.stringContaining('for the same amount due. Check this is not a resend of that invoice.')]) }),
+          expect.objectContaining({ lineReview: expect.arrayContaining([expect.stringContaining('has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.')]) }),
         );
+      });
+
+      it('asks AP to rule out a resend when the service-date invoice has the same amount due as the one that took the invoice-date number', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...unnumbered, extractedAmountDue: '$1,350.00' });
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126',
+          reused: false,
+          workdayInvoiceWid: null,
+          clashedNumber: 'TEST031726',
+          clashedAmountDue: '1350.00',
+        });
+
+        await processor({ data: [request()] } as any);
+
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]))
+          .toContain('TEST031726 has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
       });
 
       it('skips a document whose earlier invoice is live under another supplier', async () => {

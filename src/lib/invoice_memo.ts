@@ -94,7 +94,11 @@ export interface SuppliersInvoiceNumberInput {
   invoiceNumber?: string | null;
   accountNumber?: string | null;
   invoiceDate?: string | null;
-  /** The single date of service as YYYY-MM-DD. Names a supplier-prefix number in place of the invoice date. */
+  /**
+   * The date of service as YYYY-MM-DD (the last one when several are listed). Names the alternate
+   * supplier-prefix number used when the invoice-date number is taken, and the number itself only
+   * when the document has no invoice date.
+   */
   serviceDate?: string | null;
   supplierName?: string | null;
 }
@@ -106,6 +110,12 @@ export interface ComposedSuppliersInvoiceNumber {
   /** True when the agent made the number up (account or supplier prefix); false for a printed number or none. */
   generated: boolean;
   basis?: SuppliersInvoiceNumberBasis;
+  /**
+   * The supplier prefix plus the date of service, offered only for the supplier-prefix form when the
+   * document has a service date that gives a different number than `number`. It is used when `number`
+   * is already taken by another invoice.
+   */
+  serviceDateNumber?: string;
 }
 
 function parseInvoiceCalendarDate(value?: string | null): { month: number; day: number; year: number } | undefined {
@@ -132,8 +142,10 @@ export function supplierNameForInvoiceNumber(...names: Array<string | null | und
 /**
  * HQ supplier invoice number: a distinct printed number as-is; otherwise the
  * account number plus MMMYY; otherwise the first four letters of the supplier
- * plus MMDDYY. The supplier-prefix form uses the single date of service when
- * the document has one, else the document invoice date. Generated numbers stay
+ * plus the invoice date as MMDDYY. The same prefix plus the date of service is
+ * returned as `serviceDateNumber`, for the caller to use only when the
+ * invoice-date number clashes with a sibling invoice. A document with no invoice
+ * date but a service date is named from the service date. Generated numbers stay
  * unset when no usable date is available.
  */
 export function describeSuppliersInvoiceNumber(input: SuppliersInvoiceNumberInput): ComposedSuppliersInvoiceNumber {
@@ -156,14 +168,22 @@ export function describeSuppliersInvoiceNumber(input: SuppliersInvoiceNumberInpu
   }
 
   const serviceDate = parseInvoiceCalendarDate(input.serviceDate);
-  const date = serviceDate ?? invoiceDate;
   const prefix = supplierNamePrefix(input.supplierName);
-  if (!date || !prefix) return { generated: false };
-  const month = String(date.month).padStart(2, '0');
-  const day = String(date.day).padStart(2, '0');
-  const year = String(date.year).slice(-2);
-  const number = sanitizeSuppliersInvoiceNumber(`${prefix}${month}${day}${year}`);
-  return number ? { number, generated: true, basis: serviceDate ? 'service_date' : 'invoice_date' } : { generated: false };
+  if (!prefix) return { generated: false };
+  const prefixedNumber = (date: { month: number; day: number; year: number }) => sanitizeSuppliersInvoiceNumber(
+    `${prefix}${String(date.month).padStart(2, '0')}${String(date.day).padStart(2, '0')}${String(date.year).slice(-2)}`
+  );
+  const invoiceDateNumber = invoiceDate ? prefixedNumber(invoiceDate) : undefined;
+  const serviceDateNumber = serviceDate ? prefixedNumber(serviceDate) : undefined;
+  if (invoiceDateNumber) {
+    return {
+      number: invoiceDateNumber,
+      generated: true,
+      basis: 'invoice_date',
+      ...(serviceDateNumber && serviceDateNumber !== invoiceDateNumber ? { serviceDateNumber } : {}),
+    };
+  }
+  return serviceDateNumber ? { number: serviceDateNumber, generated: true, basis: 'service_date' } : { generated: false };
 }
 
 export function composeSuppliersInvoiceNumber(input: SuppliersInvoiceNumberInput): string | undefined {

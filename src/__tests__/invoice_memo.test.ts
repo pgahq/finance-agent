@@ -517,50 +517,53 @@ describe('composeSuppliersInvoiceNumber', () => {
 });
 
 describe('service-date supplier invoice numbers', () => {
-  it('names the number from the date of service instead of the invoice date', () => {
-    expect(composeSuppliersInvoiceNumber({
-      invoiceDate: '2026-03-17',
-      serviceDate: '2026-03-11',
-      supplierName: 'Riverton Fire Department',
-    })).toBe('RIVE031126');
+  it('names the number from the invoice date and offers the service date as the alternate', () => {
+    const input = { invoiceDate: '2026-03-17', serviceDate: '2026-03-11', supplierName: 'Riverton Fire Department' };
+    expect(composeSuppliersInvoiceNumber(input)).toBe('RIVE031726');
+    expect(describeSuppliersInvoiceNumber(input)).toEqual({
+      number: 'RIVE031726',
+      generated: true,
+      basis: 'invoice_date',
+      serviceDateNumber: 'RIVE031126',
+    });
   });
 
-  it('uses the invoice date when no service date is available or it is not a real date', () => {
-    for (const serviceDate of [undefined, null, '', 'not-a-date', '2026-02-31']) {
-      expect(composeSuppliersInvoiceNumber({
+  it('offers no alternate when there is no usable service date or it gives the same number', () => {
+    for (const serviceDate of [undefined, null, '', 'not-a-date', '2026-02-31', '2026-03-17']) {
+      expect(describeSuppliersInvoiceNumber({
         invoiceDate: '2026-03-17',
         serviceDate,
         supplierName: 'Riverton Fire Department',
-      })).toBe('RIVE031726');
+      })).toEqual({ number: 'RIVE031726', generated: true, basis: 'invoice_date' });
     }
   });
 
   it('generates from the service date alone when the invoice date is missing', () => {
-    expect(composeSuppliersInvoiceNumber({ serviceDate: '2026-03-11', supplierName: 'Riverton' })).toBe('RIVE031126');
+    expect(describeSuppliersInvoiceNumber({ serviceDate: '2026-03-11', supplierName: 'Riverton' }))
+      .toEqual({ number: 'RIVE031126', generated: true, basis: 'service_date' });
   });
 
   it('leaves a printed number unchanged whatever the service date', () => {
-    expect(composeSuppliersInvoiceNumber({
+    expect(describeSuppliersInvoiceNumber({
       invoiceNumber: 'INV-77',
       invoiceDate: '2026-03-17',
       serviceDate: '2026-03-11',
       supplierName: 'Riverton Fire Department',
-    })).toBe('INV-77');
+    })).toEqual({ number: 'INV-77', generated: false, basis: 'printed' });
   });
 
-  it('does not switch the account-number form to the service date', () => {
-    expect(composeSuppliersInvoiceNumber({
+  it('does not offer a service-date alternate for the account-number form', () => {
+    expect(describeSuppliersInvoiceNumber({
       accountNumber: '54875-48235',
       invoiceDate: '2026-04-01',
       serviceDate: '2026-03-11',
       supplierName: 'Lakeside Cable',
-    })).toBe('54875-48235APR26');
+    })).toEqual({ number: '54875-48235APR26', generated: true, basis: 'account' });
   });
 
   it('reports whether the number was generated and from what', () => {
     const base = { invoiceDate: '2026-03-17', supplierName: 'Riverton' };
     expect(describeSuppliersInvoiceNumber({ ...base, invoiceNumber: 'A1' })).toEqual({ number: 'A1', generated: false, basis: 'printed' });
-    expect(describeSuppliersInvoiceNumber({ ...base, serviceDate: '2026-03-11' })).toEqual({ number: 'RIVE031126', generated: true, basis: 'service_date' });
     expect(describeSuppliersInvoiceNumber(base)).toEqual({ number: 'RIVE031726', generated: true, basis: 'invoice_date' });
     expect(describeSuppliersInvoiceNumber({ ...base, accountNumber: '123' })).toEqual({ number: '123MAR26', generated: true, basis: 'account' });
     expect(describeSuppliersInvoiceNumber({ invoiceNumber: '123', accountNumber: '123', invoiceDate: '2026-03-17' }))
@@ -570,30 +573,52 @@ describe('service-date supplier invoice numbers', () => {
 });
 
 describe('formatGeneratedInvoiceNumberNotes', () => {
-  it('says a number was named from the date of service', () => {
+  const serviceDateClash = { clashedNumber: 'RIVE031726', suffixed: false };
+
+  it('says a number was named from the date of service because the document has no invoice date', () => {
     expect(formatGeneratedInvoiceNumberNotes({
       number: 'RIVE031126',
       basis: 'service_date',
-      baseNumber: 'RIVE031126',
       serviceDate: '2026-03-11',
     })).toBe('\n\nSupplier Invoice Number (no number printed; generated from the date of service 2026-03-11): RIVE031126');
+  });
+
+  it('explains a move to the service date after a sibling took the invoice-date number', () => {
+    const note = formatGeneratedInvoiceNumberNotes({
+      number: 'RIVE031126',
+      basis: 'service_date',
+      serviceDate: '2026-03-11',
+      clash: serviceDateClash,
+    });
+    expect(note).toContain('generated from the date of service 2026-03-11): RIVE031126.');
+    expect(note).toContain('Another invoice in this conversation also generated RIVE031726 (same supplier and invoice date), so this one uses the date of service.');
+    expect(note).toContain('Check this is not a resend of RIVE031726 before submitting.');
+  });
+
+  it('says plainly when the invoice that holds the clashed number has the same amount due', () => {
+    expect(formatGeneratedInvoiceNumberNotes({
+      number: 'RIVE031126',
+      basis: 'service_date',
+      serviceDate: '2026-03-11',
+      clash: { ...serviceDateClash, amountDue: '1350.00', clashedAmountDue: '1350.00' },
+    })).toContain('RIVE031726 has the same amount due ($1350.00). Check this is not a resend of that invoice before submitting.');
   });
 
   it('explains a sibling suffix', () => {
     expect(formatGeneratedInvoiceNumberNotes({
       number: 'RIVE031126-2',
       basis: 'service_date',
-      baseNumber: 'RIVE031126',
       serviceDate: '2026-03-11',
+      clash: { clashedNumber: 'RIVE031126', suffixed: true },
     })).toContain('RIVE031126 is already used by another invoice in this conversation, so this one is suffixed.');
-    expect(formatGeneratedInvoiceNumberNotes({ number: 'RIVE031726-3', basis: 'invoice_date', baseNumber: 'RIVE031726' }))
+    expect(formatGeneratedInvoiceNumberNotes({ number: 'RIVE031726-3', basis: 'invoice_date', clash: { clashedNumber: 'RIVE031726', suffixed: true } }))
       .toContain('generated from the invoice date): RIVE031726-3. RIVE031726 is already used');
   });
 
   it('adds nothing for printed numbers or the plain invoice-date and account forms', () => {
-    expect(formatGeneratedInvoiceNumberNotes({ number: 'INV-1', basis: 'printed', baseNumber: 'INV-1' })).toBe('');
-    expect(formatGeneratedInvoiceNumberNotes({ number: 'RIVE031726', basis: 'invoice_date', baseNumber: 'RIVE031726' })).toBe('');
-    expect(formatGeneratedInvoiceNumberNotes({ number: '123MAR26', basis: 'account', baseNumber: '123MAR26' })).toBe('');
+    expect(formatGeneratedInvoiceNumberNotes({ number: 'INV-1', basis: 'printed' })).toBe('');
+    expect(formatGeneratedInvoiceNumberNotes({ number: 'RIVE031726', basis: 'invoice_date' })).toBe('');
+    expect(formatGeneratedInvoiceNumberNotes({ number: '123MAR26', basis: 'account' })).toBe('');
     expect(formatGeneratedInvoiceNumberNotes({})).toBe('');
   });
 });

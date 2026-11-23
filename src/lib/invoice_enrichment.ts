@@ -457,37 +457,54 @@ export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): strin
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;
 }
 
+export interface GeneratedInvoiceNumberClash {
+  /** The number this invoice generated first that another invoice in the conversation holds. */
+  clashedNumber: string;
+  /** True when a -2, -3 suffix was needed, false when this invoice moved to its service-date number. */
+  suffixed: boolean;
+  /** The amount due of this invoice and of the invoice holding the clashed number, as generatedNumberAmountKey. */
+  amountDue?: string | null;
+  clashedAmountDue?: string | null;
+}
+
+/**
+ * The sentence for AP when a number the agent made up clashed with another invoice of the conversation, ending
+ * with the request to rule out a resend (plainly, when the amount due matches). Shared by the invoice note and
+ * the Slack review line.
+ */
+export function describeGeneratedNumberClash(clash: GeneratedInvoiceNumberClash): string {
+  const sameAmount = Boolean(clash.amountDue && clash.amountDue === clash.clashedAmountDue);
+  const reason = clash.suffixed
+    ? `${clash.clashedNumber} is already used by another invoice in this conversation, so this one is suffixed.`
+    : `Another invoice in this conversation also generated ${clash.clashedNumber} (same supplier and invoice date), so this one uses the date of service.`;
+  const resend = sameAmount
+    ? `${clash.clashedNumber} has the same amount due ($${clash.amountDue}). Check this is not a resend of that invoice before submitting.`
+    : `Check this is not a resend of ${clash.clashedNumber} before submitting.`;
+  return `${reason} ${resend}`;
+}
+
 /**
  * Says how a number the agent made up was chosen when that is not the plain invoice-date form: a number named from
- * the date of service, or one suffixed because a sibling invoice in the conversation holds the base number.
+ * the date of service (because the invoice-date number clashed, or the document has no invoice date), or one
+ * suffixed because a sibling invoice in the conversation holds the number.
  */
 export function formatGeneratedInvoiceNumberNotes(generated: {
   number?: string;
+  /** What the given number was built from. */
   basis?: 'printed' | 'account' | 'service_date' | 'invoice_date';
-  /** The number before any sibling suffix. */
-  baseNumber?: string;
   /** The date of service, YYYY-MM-DD, when the number was named from it. */
   serviceDate?: string | null;
-  /** The amount due of this invoice and of the invoice holding the base number, as generatedNumberAmountKey. */
-  amountDue?: string | null;
-  baseAmountDue?: string | null;
+  clash?: GeneratedInvoiceNumberClash;
 }): string {
   if (!generated.number || !generated.basis || generated.basis === 'printed') return '';
-  const suffixed = Boolean(generated.baseNumber && generated.baseNumber !== generated.number);
-  if (generated.basis !== 'service_date' && !suffixed) return '';
+  if (generated.basis !== 'service_date' && !generated.clash) return '';
   const origin = generated.basis === 'service_date'
     ? `generated from the date of service ${generated.serviceDate ?? ''}`.trim()
     : generated.basis === 'account'
       ? 'generated from the account number'
       : 'generated from the invoice date';
-  const sameAmount = Boolean(generated.amountDue && generated.amountDue === generated.baseAmountDue);
-  const suffixNote = suffixed
-    ? `. ${generated.baseNumber} is already used by another invoice in this conversation, so this one is suffixed.`
-      + (sameAmount
-        ? ` ${generated.baseNumber} has the same amount due ($${generated.amountDue}). Check this is not a resend of that invoice before submitting.`
-        : ` Check this is not a resend of ${generated.baseNumber} before submitting.`)
-    : '';
-  return `\n\nSupplier Invoice Number (no number printed; ${origin}): ${generated.number}${suffixNote}`;
+  const clashNote = generated.clash ? `. ${describeGeneratedNumberClash(generated.clash)}` : '';
+  return `\n\nSupplier Invoice Number (no number printed; ${origin}): ${generated.number}${clashNote}`;
 }
 
 export function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): string {

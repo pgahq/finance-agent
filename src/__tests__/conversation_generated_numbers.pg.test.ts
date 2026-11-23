@@ -4,7 +4,7 @@
  */
 import { Pool } from 'pg';
 import { CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE, type DatabaseConnection } from '../lib/database.js';
-import { findGeneratedInvoicesForDocument, recordGeneratedInvoiceNumberInvoice, reserveGeneratedInvoiceNumber } from '../lib/conversation_invoices.js';
+import { findGeneratedInvoicesForDocument, recordGeneratedInvoiceNumberInvoice, reserveGeneratedInvoiceNumber, settleGeneratedInvoiceNumber } from '../lib/conversation_invoices.js';
 
 const url = process.env.GENERATED_NUMBERS_PG_URL;
 const describeWithPostgres = url ? describe : describe.skip;
@@ -30,35 +30,54 @@ describeWithPostgres('generated invoice number reservation (Postgres)', () => {
     await pool.end();
   });
 
-  const reserve = (documentHash: string, overrides: Partial<{ conversationId: string; supplierWid: string; baseNumber: string; amountDue: string }> = {}) =>
+  const reserve = (documentHash: string, overrides: Partial<{ conversationId: string; supplierWid: string; candidates: string[]; amountDue: string }> = {}) =>
     reserveGeneratedInvoiceNumber(db, {
       conversationId: 'conv-1',
       supplierWid: 'supplier-1',
-      baseNumber: 'ABCD031126',
+      candidates: ['ABCD031126'],
       documentHash: documentHash.padEnd(64, '0'),
       ...overrides,
     });
 
-  it('gives parallel siblings with the same base distinct numbers', async () => {
+  it('gives parallel siblings with the same number distinct numbers', async () => {
     const results = await Promise.all(['a', 'b', 'c', 'd', 'e'].map((hash) => reserve(hash)));
     expect(results.map((result) => result.assignedNumber).sort())
       .toEqual(['ABCD031126', 'ABCD031126-2', 'ABCD031126-3', 'ABCD031126-4', 'ABCD031126-5']);
     expect(results.every((result) => !result.reused)).toBe(true);
   });
 
-  it('returns the same number for the same document, even when this run generated another base', async () => {
+  it('gives parallel same-date siblings one invoice-date number and service-date numbers, then settles the holder', async () => {
+    const days = ['11', '12', '13', '14', '15'];
+    const results = await Promise.all(days.map((day, index) => reserve('abcde'[index], { candidates: ['ABCD031726', `ABCD03${day}26`] })));
+    const holderIndex = results.findIndex((result) => result.assignedNumber === 'ABCD031726');
+    expect(holderIndex).toBeGreaterThanOrEqual(0);
+    expect(results.filter((result) => result.assignedNumber === 'ABCD031726')).toHaveLength(1);
+
+    const settled = await settleGeneratedInvoiceNumber(db, {
+      conversationId: 'conv-1',
+      supplierWid: 'supplier-1',
+      documentHash: 'abcde'[holderIndex].padEnd(64, '0'),
+      assignedNumber: 'ABCD031726',
+      alternateNumber: `ABCD03${days[holderIndex]}26`,
+    });
+    expect(settled).toEqual({ assignedNumber: `ABCD03${days[holderIndex]}26`, moved: true });
+    const rows = await pool.query('SELECT assigned_number FROM conversation_generated_invoice_numbers ORDER BY assigned_number');
+    expect(rows.rows.map((row) => row.assigned_number)).toEqual(days.map((day) => `ABCD03${day}26`));
+  });
+
+  it('returns the same number for the same document, even when this run generated other candidates', async () => {
     await reserve('a');
     const second = await reserve('b');
     expect(second.assignedNumber).toBe('ABCD031126-2');
 
-    const again = await reserve('b', { baseNumber: 'ABCD031726' });
+    const again = await reserve('b', { candidates: ['ABCD031726', 'ABCD031126'] });
     expect(again).toEqual({ assignedNumber: 'ABCD031126-2', reused: true, workdayInvoiceWid: null });
   });
 
-  it('returns the amount due of the base holder when a sibling is suffixed', async () => {
+  it('returns the amount due of the clashed holder when a sibling is suffixed', async () => {
     await reserve('a', { amountDue: '$1,350.00' });
     const second = await reserve('b', { amountDue: '$1,350.00' });
-    expect(second).toMatchObject({ assignedNumber: 'ABCD031126-2', baseAmountDue: '1350.00' });
+    expect(second).toMatchObject({ assignedNumber: 'ABCD031126-2', clashedNumber: 'ABCD031126', clashedAmountDue: '1350.00' });
   });
 
   it('finds the document under another supplier only once an invoice is recorded for it', async () => {
