@@ -7294,7 +7294,7 @@ describe('create_invoice', () => {
         expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
         const notes = submitArgs.buildNotes([]);
         expect(notes).toContain('generated from the date of service 2026-03-11): TEST031126.');
-        expect(notes).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number, so this one uses the date of service.');
+        expect(notes).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 got the same invoice-date number, so this one uses the date of service.');
         expect(notes).not.toContain('TEST031726');
         expect(registry.settleGeneratedInvoiceNumber).not.toHaveBeenCalled();
         expect(registry.recordGeneratedInvoiceNumberInvoice).toHaveBeenCalledWith(
@@ -7329,7 +7329,7 @@ describe('create_invoice', () => {
         expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
         const notes = submitArgs.buildNotes([]);
         expect(notes).toContain('generated from the date of service 2026-03-11): TEST031126.');
-        expect(notes).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number');
+        expect(notes).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 got the same invoice-date number');
         expect(notes).toContain('Check this is not a resend of another invoice from this supplier dated 2026-03-17 before submitting.');
         // The invoice that held the number may move on too, so the note must not name a number nobody keeps.
         expect(notes).not.toContain('TEST031726');
@@ -7369,7 +7369,7 @@ describe('create_invoice', () => {
         await processor({ data: [request()] } as any);
 
         expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]))
-          .toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number');
+          .toContain('Another invoice in this conversation from this supplier dated 2026-03-17 got the same invoice-date number');
       });
 
       it('tells the settled holder when a sibling has the same amount due', async () => {

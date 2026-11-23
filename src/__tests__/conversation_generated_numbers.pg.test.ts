@@ -80,6 +80,22 @@ describeWithPostgres('generated invoice number reservation (Postgres)', () => {
     expect(settled).toEqual({ assignedNumber: 'ABCD031126', moved: true, sameAmountSibling: true });
   });
 
+  it('does not move the holder off a number that has a suffix', async () => {
+    const holder = await reserve('a', { candidates: ['ABCD031726', 'ABCD031126'] });
+    const suffixed = await reserve('b', { candidates: ['ABCD031726'] });
+    await reserve('c', { candidates: ['ABCD031726', 'ABCD031226'] });
+    expect([holder.assignedNumber, suffixed.assignedNumber]).toEqual(['ABCD031726', 'ABCD031726-2']);
+
+    const settled = await settleGeneratedInvoiceNumber(db, {
+      conversationId: 'conv-1',
+      supplierWid: 'supplier-1',
+      documentHash: 'a'.padEnd(64, '0'),
+      assignedNumber: 'ABCD031726',
+      alternateNumber: 'ABCD031126',
+    });
+    expect(settled).toEqual({ assignedNumber: 'ABCD031726', moved: false });
+  });
+
   it('returns the same number for the same document, even when this run generated other candidates', async () => {
     await reserve('a');
     const second = await reserve('b');

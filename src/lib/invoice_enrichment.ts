@@ -485,7 +485,7 @@ export function describeGeneratedNumberClash(clash: GeneratedInvoiceNumberClash)
     return `${clash.clashedNumber} is already used by another invoice in this conversation, so this one is suffixed. ${resend}`;
   }
   const dated = clash.invoiceDate ? ` dated ${clash.invoiceDate}` : '';
-  const reason = `Another invoice in this conversation from this supplier${dated} was generated the same invoice-date number, so this one uses the date of service.`;
+  const reason = `Another invoice in this conversation from this supplier${dated} got the same invoice-date number, so this one uses the date of service.`;
   const resend = sameAmount
     ? `It has the same amount due ($${clash.amountDue}). Check this is not a resend of that invoice before submitting.`
     : `Check this is not a resend of another invoice from this supplier${dated} before submitting.`;

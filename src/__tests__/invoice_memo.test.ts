@@ -591,7 +591,7 @@ describe('formatGeneratedInvoiceNumberNotes', () => {
       clash: { ...serviceDateClash, invoiceDate: '2026-03-17' },
     });
     expect(note).toContain('generated from the date of service 2026-03-11): RIVE031126.');
-    expect(note).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 was generated the same invoice-date number, so this one uses the date of service.');
+    expect(note).toContain('Another invoice in this conversation from this supplier dated 2026-03-17 got the same invoice-date number, so this one uses the date of service.');
     expect(note).toContain('Check this is not a resend of another invoice from this supplier dated 2026-03-17 before submitting.');
     expect(note).not.toContain('RIVE031726');
   });

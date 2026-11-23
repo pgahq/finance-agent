@@ -123,7 +123,9 @@ function generatedNumbersDb(onQuery?: (sql: string) => void) {
       const row = rows.find((candidate) => candidate.conversation_id === conversation && candidate.supplier_wid === supplier
         && candidate.document_hash === hash && candidate.assigned_number === assigned && candidate.contested && !candidate.workday_invoice_wid);
       const taken = rows.some((candidate) => candidate.conversation_id === conversation && candidate.supplier_wid === supplier && candidate.assigned_number === alternate);
-      if (!row || taken) return [];
+      const suffixed = rows.some((candidate) => candidate.conversation_id === conversation && candidate.supplier_wid === supplier
+        && candidate.assigned_number.startsWith(`${assigned}-`));
+      if (!row || taken || suffixed) return [];
       row.assigned_number = alternate;
       row.contested = false;
       return [{ assigned_number: alternate }];
@@ -359,6 +361,18 @@ describe('settleGeneratedInvoiceNumber', () => {
     await expect(settle(db, hash('a'), 'ABCD031126')).resolves.toEqual({ assignedNumber: 'ABCD031126', moved: true, sameAmountSibling: false });
     expect(rows.map((row) => row.assigned_number).sort()).toEqual(['ABCD031126', 'ABCD031226']);
     await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber], documentHash: hash('a') })).resolves.toMatchObject({ assignedNumber: 'ABCD031126', reused: true });
+  });
+
+  it('keeps the holder on its number while a suffix of that number exists', async () => {
+    const { db } = generatedNumbersDb();
+    await reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber, 'ABCD031126'], documentHash: hash('a') });
+    const noServiceDate = await reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber], documentHash: hash('b') });
+    await reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber, 'ABCD031226'], documentHash: hash('c') });
+    expect(noServiceDate.assignedNumber).toBe(`${invoiceDateNumber}-2`);
+
+    await expect(settleGeneratedInvoiceNumber(db, {
+      ...base, documentHash: hash('a'), assignedNumber: invoiceDateNumber, alternateNumber: 'ABCD031126',
+    })).resolves.toEqual({ assignedNumber: invoiceDateNumber, moved: false });
   });
 
   it('reports whether a sibling that generated the same number has the same amount due', async () => {

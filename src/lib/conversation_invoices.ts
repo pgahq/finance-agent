@@ -294,7 +294,8 @@ export async function reserveGeneratedInvoiceNumber(
  * Lets the invoice that took the default number move to its own alternate (the service-date number) when a
  * sibling clashed with it since, so a batch of same-date invoices ends up with service-date numbers instead of one
  * invoice-date number among them. Best effort: it moves only a reservation no invoice has been created from, and
- * only when the alternate is free; a sibling that arrives after the invoice is submitted cannot change it.
+ * only when the alternate is free and no -2, -3 suffix of the current number exists (that suffix would be left
+ * without its base); a sibling that takes a suffix between the check and the update can still strand it. A sibling that arrives after the invoice is submitted cannot change it.
  * `sameAmountSibling` says whether another invoice that generated the same default number has the same amount due,
  * so the note can ask AP to rule out a resend without naming the number this invoice just left.
  */
@@ -321,6 +322,10 @@ export async function settleGeneratedInvoiceNumber(
           AND NOT EXISTS (
             SELECT 1 FROM conversation_generated_invoice_numbers
              WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $5
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_generated_invoice_numbers
+             WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number LIKE $4 || '-%'
           )
         RETURNING assigned_number`,
       [conversationId, supplierWid, documentHash, assignedNumber, alternateNumber]
