@@ -1315,6 +1315,41 @@ describe('removeBreakdownRows', () => {
     expect(removeBreakdownRows([group[0], group[1], { ...group[2], pinnedPurchaseOrderLineId: 'L1' }], { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
   });
 
+  describe('freight rows in the line table', () => {
+    it('leaves a trailing freight row out of the search when the lines already reconcile', () => {
+      const lines = [row('Site survey', '100.00'), row('Labor', '60.00'), row('Materials', '40.00'), row('Shipping', '100.00')];
+      const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('200.00'), amountDue: '300.00', freight: '100.00' });
+      expect(result.removed).toEqual([]);
+      expect(result.lines).toBe(lines);
+    });
+
+    it('leaves the rows when freight read from the line table is the header freight and no subtotal is printed', () => {
+      const lines = [row('Widget kit', '50.00'), row('Part A', '30.00'), row('Part B', '20.00'), row('Shipping', '50.00')];
+      expect(removeBreakdownRows(lines, { amountDue: '150.00', freight: '50.00' }).removed).toEqual([]);
+    });
+
+    it('does not count a freight row as a breakdown row of the total above it', () => {
+      const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Shipping', '40.00'), row('Setup', '40.00')];
+      expect(removeBreakdownRows(lines, { amountDue: '240.00', freight: '40.00' }).removed).toEqual([]);
+    });
+
+    it('still removes a real breakdown and keeps the freight row in place', () => {
+      const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Labor', '40.00'), row('Shipping', '25.00')];
+      const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('$100.00'), amountDue: '$125.00', freight: '25.00' });
+
+      expect(result.lines.map(line => line.description)).toEqual(['Order total', 'Shipping']);
+      expect(result.removed.map(line => line.description)).toEqual(['Parts', 'Labor']);
+    });
+  });
+
+  it('keeps the parent even when open PO lines are passed, because the printed subtotal counts the charge once', () => {
+    const poLines = [{ description: 'Tier 1 usage' }, { description: 'Tier 2 usage' }] as any;
+    const result = removeBreakdownRows(group, { lineSubtotal: subtotal('$100.00'), poLines });
+
+    expect(result.lines.map(line => line.description)).toEqual(['Usage total']);
+    expect(result.removed.map(line => line.description)).toEqual(['Tier 1', 'Tier 2']);
+  });
+
   it('leaves the rows when a deposit, payment, or balance is printed', () => {
     expect(removeBreakdownRows(group, { lineSubtotal: subtotal('$100.00'), settlementPrinted: true }).removed).toEqual([]);
   });

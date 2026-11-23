@@ -564,7 +564,7 @@ function sameSection(a: ExtractedInvoiceLine, b: ExtractedInvoiceLine): boolean 
  * printed deposit, payment, or retainage leaves every row in place for the amount check. The parent stays because
  * it names the service and is the single sum.
  */
-export function removeBreakdownRows<T extends ExtractedInvoiceLine>(lines: T[], input: {
+export function removeBreakdownRows<T extends ExtractedInvoiceLine>(allLines: T[], input: {
   lineSubtotal?: PrintedLineSubtotal | null;
   amountDue?: string | null;
   /** Header freight and tax as they will be submitted (undefined when cleared). */
@@ -575,7 +575,9 @@ export function removeBreakdownRows<T extends ExtractedInvoiceLine>(lines: T[], 
   settlementPrinted?: boolean;
   poLines?: PayrollTaxContext['poLines'];
 }): RemovedBreakdownRows<T> {
-  const unchanged: RemovedBreakdownRows<T> = { lines, removed: [] };
+  const unchanged: RemovedBreakdownRows<T> = { lines: allLines, removed: [] };
+  // Freight rows are not part of the target (it leaves header freight out), so only merchandise rows are searched.
+  const { merchandiseLines: lines } = splitFreightLines(allLines);
   if (input.settlementPrinted || lines.length < BREAKDOWN_MIN_CHILDREN + 1) return unchanged;
   if (lines.some(line => !line.description?.trim())) return unchanged;
   const amounts = lines.map(line => signedChargeLineAmount(line));
@@ -640,9 +642,10 @@ export function removeBreakdownRows<T extends ExtractedInvoiceLine>(lines: T[], 
   };
   const parts = chosen.map(group => `${describeRow(group.parent)} is already the sum of ${listed(group.children)}`);
   const remainingTotal = formatChargeDollars((totalCents - [...removed].reduce((sum, index) => sum + cents[index], 0)) / 100);
+  const removedRows = new Set<T>(lines.filter((_, index) => removed.has(index)));
   return {
-    lines: lines.filter((_, index) => !removed.has(index)),
-    removed: lines.filter((_, index) => removed.has(index)),
+    lines: allLines.filter(line => !removedRows.has(line)),
+    removed: allLines.filter(line => removedRows.has(line)),
     note: `Left off ${removed.size === 1 ? 'row' : 'rows'} that break down a charge printed above ${removed.size === 1 ? 'it' : 'them'}: ${parts.join('; ')}. With ${removed.size === 1 ? 'it' : 'them'} left off the lines total ${remainingTotal}, ${targetText}.`,
   };
 }
