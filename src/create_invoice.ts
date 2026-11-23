@@ -1676,19 +1676,11 @@ async function processInvoiceCluster(
       : generatedNumberReservation?.clashedNumber
         ? {
           clashedNumber: generatedNumberReservation.clashedNumber,
-          suffixed: generatedNumberReservation.assignedNumber !== composedSuppliersInvoiceNumber.serviceDateNumber
-            && generatedNumberReservation.assignedNumber !== composedSuppliersInvoiceNumber.number,
+          suffixed: Boolean(generatedNumberReservation.suffixed),
           amountDue: amountDueKey,
           clashedAmountDue: generatedNumberReservation.clashedAmountDue,
         }
-        : generatedNumberReservation?.reused && composedSuppliersInvoiceNumber.number
-          && generatedNumberReservation.assignedNumber !== composedSuppliersInvoiceNumber.number
-          ? {
-            clashedNumber: composedSuppliersInvoiceNumber.number,
-            suffixed: generatedNumberReservation.assignedNumber !== composedSuppliersInvoiceNumber.serviceDateNumber,
-            amountDue: amountDueKey,
-          }
-          : undefined;
+        : undefined;
     const generatedInvoiceNumberNotes = formatGeneratedInvoiceNumberNotes({
       number: extractedSuppliersInvoiceNumber,
       basis: generatedNumberBasis,

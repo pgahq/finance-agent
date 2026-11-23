@@ -128,6 +128,12 @@ function generatedNumbersDb(onQuery?: (sql: string) => void) {
       row.contested = false;
       return [{ assigned_number: alternate }];
     }
+    if (sql.includes('document_hash <> $4')) {
+      const [conversation, supplier, assigned, hash] = values as string[];
+      return rows.filter((row) => row.conversation_id === conversation && row.supplier_wid === supplier
+        && row.assigned_number === assigned && row.document_hash !== hash)
+        .map((row) => ({ assigned_number: row.assigned_number, amount_due: row.amount_due }));
+    }
     if (sql.includes('SELECT amount_due')) {
       const [conversation, supplier, assigned] = values as string[];
       return rows.filter((row) => row.conversation_id === conversation && row.supplier_wid === supplier && row.assigned_number === assigned)
@@ -160,7 +166,45 @@ describe('reserveGeneratedInvoiceNumber', () => {
       reused: true,
       workdayInvoiceWid: 'invoice-wid',
     });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.some(([sql]) => sql.includes('INSERT'))).toBe(false);
+  });
+
+  it('names the clash on a reused number only while a sibling still holds the number it moved off', async () => {
+    const { db } = generatedNumbersDb();
+    await reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('a'), amountDue: '$1,350.00' });
+    await reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('b') });
+    await reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('c') });
+
+    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('b') })).resolves.toEqual({
+      assignedNumber: serviceDateNumber,
+      reused: true,
+      workdayInvoiceWid: null,
+      clashedNumber: invoiceDateNumber,
+      clashedAmountDue: '1350.00',
+      suffixed: false,
+    });
+    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('c') })).resolves.toMatchObject({
+      assignedNumber: `${serviceDateNumber}-2`,
+      clashedNumber: serviceDateNumber,
+      suffixed: true,
+    });
+  });
+
+  it('names no clash on a reused number when no sibling holds the number it differs from', async () => {
+    const { db, rows } = generatedNumbersDb();
+    // A row written before invoice-date-first numbering: the service-date number, with no sibling holding the invoice-date number.
+    rows.push({ conversation_id: '123', supplier_wid: 'supplier-wid', assigned_number: serviceDateNumber, base_number: serviceDateNumber, document_hash: hash('a'), amount_due: null, contested: false, workday_invoice_wid: null });
+
+    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('a') })).resolves.toEqual({
+      assignedNumber: serviceDateNumber,
+      reused: true,
+      workdayInvoiceWid: null,
+    });
+    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates: ['ZZZZ010126', 'ZZZZ010226'], documentHash: hash('a') })).resolves.toEqual({
+      assignedNumber: serviceDateNumber,
+      reused: true,
+      workdayInvoiceWid: null,
+    });
   });
 
   it('takes the invoice-date number when it is free', async () => {
@@ -185,6 +229,7 @@ describe('reserveGeneratedInvoiceNumber', () => {
       workdayInvoiceWid: null,
       clashedNumber: invoiceDateNumber,
       clashedAmountDue: '1350.00',
+      suffixed: false,
     });
     expect(rows.find((row) => row.assigned_number === invoiceDateNumber)?.contested).toBe(true);
   });
@@ -230,7 +275,7 @@ describe('reserveGeneratedInvoiceNumber', () => {
     await reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('a') });
     const second = await reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('b') });
 
-    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('b') })).resolves.toEqual({
+    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates, documentHash: hash('b') })).resolves.toMatchObject({
       assignedNumber: second.assignedNumber,
       reused: true,
       workdayInvoiceWid: null,
@@ -308,6 +353,17 @@ describe('settleGeneratedInvoiceNumber', () => {
     await expect(settle(db, hash('a'), 'ABCD031126')).resolves.toEqual({ assignedNumber: 'ABCD031126', moved: true });
     expect(rows.map((row) => row.assigned_number).sort()).toEqual(['ABCD031126', 'ABCD031226']);
     await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber], documentHash: hash('a') })).resolves.toMatchObject({ assignedNumber: 'ABCD031126', reused: true });
+  });
+
+  it('does not move the holder when the clashing sibling has no service-date number and takes a suffix', async () => {
+    const { db } = generatedNumbersDb();
+    await reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber, 'ABCD031126'], documentHash: hash('a') });
+    await expect(reserveGeneratedInvoiceNumber(db, { ...base, candidates: [invoiceDateNumber], documentHash: hash('b') })).resolves.toMatchObject({
+      assignedNumber: `${invoiceDateNumber}-2`,
+      suffixed: true,
+    });
+
+    await expect(settle(db, hash('a'), 'ABCD031126')).resolves.toEqual({ assignedNumber: invoiceDateNumber, moved: false });
   });
 
   it('keeps the number when the service-date number is already taken (a copy of the same invoice)', async () => {

@@ -71,7 +71,7 @@ describeWithPostgres('generated invoice number reservation (Postgres)', () => {
     expect(second.assignedNumber).toBe('ABCD031126-2');
 
     const again = await reserve('b', { candidates: ['ABCD031726', 'ABCD031126'] });
-    expect(again).toEqual({ assignedNumber: 'ABCD031126-2', reused: true, workdayInvoiceWid: null });
+    expect(again).toMatchObject({ assignedNumber: 'ABCD031126-2', reused: true, workdayInvoiceWid: null, clashedNumber: 'ABCD031126', suffixed: true });
   });
 
   it('returns the amount due of the clashed holder when a sibling is suffixed', async () => {

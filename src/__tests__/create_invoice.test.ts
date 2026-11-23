@@ -7333,6 +7333,40 @@ describe('create_invoice', () => {
         );
       });
 
+      it('writes no clash note for a reused number when no sibling holds the number it differs from', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({ assignedNumber: 'TEST031126', reused: true, workdayInvoiceWid: null });
+
+        await processor({ data: [request()] } as any);
+
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.suppliersInvoiceNumber).toBe('TEST031126');
+        const notes = submitArgs.buildNotes([]);
+        expect(notes).not.toContain('also generated');
+        expect(notes).not.toContain('suffixed');
+      });
+
+      it('keeps the clash note for a reused number a sibling still forced', async () => {
+        const { processor, workday, invoiceEnrichment, invoiceLines, registry } = freshRequire();
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(unnumbered);
+        registry.reserveGeneratedInvoiceNumber.mockResolvedValue({
+          assignedNumber: 'TEST031126',
+          reused: true,
+          workdayInvoiceWid: null,
+          clashedNumber: 'TEST031726',
+          clashedAmountDue: null,
+          suffixed: false,
+        });
+
+        await processor({ data: [request()] } as any);
+
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]))
+          .toContain('Another invoice in this conversation also generated TEST031726');
+      });
+
       it('does not settle a document that already held its number from an earlier run', async () => {
         const { processor, invoiceEnrichment, invoiceLines, registry } = freshRequire();
         invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -7354,6 +7388,7 @@ describe('create_invoice', () => {
           workdayInvoiceWid: null,
           clashedNumber: 'TEST031126',
           clashedAmountDue: null,
+          suffixed: true,
         });
 
         await processor({ data: [request()] } as any);
@@ -7380,6 +7415,7 @@ describe('create_invoice', () => {
           workdayInvoiceWid: null,
           clashedNumber: 'TEST031726',
           clashedAmountDue: null,
+          suffixed: true,
         });
 
         await processor({ data: [request()] } as any);
@@ -7460,6 +7496,7 @@ describe('create_invoice', () => {
           workdayInvoiceWid: null,
           clashedNumber: 'TEST031126',
           clashedAmountDue: '1350.00',
+          suffixed: true,
         });
 
         await processor({ data: [request()] } as any);

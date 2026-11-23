@@ -129,6 +129,8 @@ export interface GeneratedInvoiceNumberReservation {
    * note say plainly when this invoice looks like a resend of that one.
    */
   clashedAmountDue?: string | null;
+  /** With `clashedNumber`: true when a -2, -3 suffix was needed, false when a later candidate was free. */
+  suffixed?: boolean;
 }
 
 interface GeneratedInvoiceNumberRow {
@@ -175,8 +177,9 @@ const MAX_GENERATED_NUMBER_SUFFIX = 50;
  * holds a number in this conversation and supplier keeps it, whatever this run generated, so a re-trigger never
  * moves an invoice to a new number. Otherwise the first free candidate is taken (the invoice-date number, then the
  * service-date number), else the first free -2, -3 ... suffix of the last candidate. The insert is atomic, so
- * parallel runs for sibling invoices never get the same number. Each clash marks the holder's row contested, so
- * the holder can still move to its own alternate before it submits (see settleGeneratedInvoiceNumber).
+ * parallel runs for sibling invoices never get the same number. A clash from a document that has a later
+ * candidate marks the holder's row contested, so the holder can still move to its own alternate before it submits
+ * (see settleGeneratedInvoiceNumber); a clash that goes straight to a suffix never moves the holder.
  */
 export async function reserveGeneratedInvoiceNumber(
   db: DatabaseConnection,
@@ -186,6 +189,9 @@ export async function reserveGeneratedInvoiceNumber(
   const candidates = [...new Set(params.candidates.filter(Boolean))];
   if (!candidates.length) throw new Error('Could not reserve a supplier invoice number: no candidate number was given');
   const amountDue = generatedNumberAmountKey(params.amountDue);
+  // A reused number carries a clash only when another document of this conversation and supplier still holds the
+  // number it was moved off, so the note never names a sibling that is not there (rows from before this order
+  // existed, or a re-run that read a different date, have none).
   const findByDocument = async (): Promise<GeneratedInvoiceNumberReservation | undefined> => {
     const rows = (await db.query(
       `SELECT assigned_number, workday_invoice_wid
@@ -194,9 +200,22 @@ export async function reserveGeneratedInvoiceNumber(
         LIMIT 1`,
       [conversationId, supplierWid, documentHash]
     )) as GeneratedInvoiceNumberRow[];
-    return rows.length
-      ? { assignedNumber: rows[0].assigned_number, reused: true, workdayInvoiceWid: rows[0].workday_invoice_wid }
-      : undefined;
+    if (!rows.length) return undefined;
+    const assignedNumber = rows[0].assigned_number;
+    const reused: GeneratedInvoiceNumberReservation = { assignedNumber, reused: true, workdayInvoiceWid: rows[0].workday_invoice_wid };
+    const lastCandidate = candidates[candidates.length - 1];
+    const movedOffNumber = assignedNumber === candidates[0]
+      ? undefined
+      : candidates.includes(assignedNumber) ? candidates[0] : assignedNumber.startsWith(`${lastCandidate}-`) ? lastCandidate : undefined;
+    if (!movedOffNumber) return reused;
+    const holders = (await db.query(
+      `SELECT assigned_number, amount_due FROM conversation_generated_invoice_numbers
+        WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $3 AND document_hash <> $4`,
+      [conversationId, supplierWid, movedOffNumber, documentHash]
+    )) as GeneratedInvoiceNumberRow[];
+    return holders.length
+      ? { ...reused, clashedNumber: movedOffNumber, clashedAmountDue: holders[0].amount_due ?? null, suffixed: movedOffNumber === lastCandidate && !candidates.includes(assignedNumber) }
+      : reused;
   };
   const holderAmountDue = async (assignedNumber: string): Promise<string | null> => {
     const rows = (await db.query(
@@ -208,7 +227,8 @@ export async function reserveGeneratedInvoiceNumber(
   };
   // The conflict was either the number (a sibling holds it) or this document (a parallel run just reserved it).
   const tryReserve = async (
-    assignedNumber: string
+    assignedNumber: string,
+    markContested: boolean
   ): Promise<{ reserved: true } | { reserved: false; raced?: GeneratedInvoiceNumberReservation }> => {
     const inserted = (await db.query(
       `INSERT INTO conversation_generated_invoice_numbers
@@ -221,11 +241,13 @@ export async function reserveGeneratedInvoiceNumber(
     if (inserted.length) return { reserved: true };
     const raced = await findByDocument();
     if (raced) return { reserved: false, raced };
-    await db.query(
-      `UPDATE conversation_generated_invoice_numbers SET contested = TRUE
-        WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $3`,
-      [conversationId, supplierWid, assignedNumber]
-    );
+    if (markContested) {
+      await db.query(
+        `UPDATE conversation_generated_invoice_numbers SET contested = TRUE
+          WHERE conversation_id = $1 AND supplier_wid = $2 AND assigned_number = $3`,
+        [conversationId, supplierWid, assignedNumber]
+      );
+    }
     return { reserved: false };
   };
 
@@ -233,7 +255,8 @@ export async function reserveGeneratedInvoiceNumber(
   if (existing) return existing;
 
   for (let index = 0; index < candidates.length; index += 1) {
-    const result = await tryReserve(candidates[index]);
+    // Only a clasher with a later candidate of its own moves off the number, so only then may the holder move too.
+    const result = await tryReserve(candidates[index], index < candidates.length - 1);
     if (result.reserved) {
       if (index === 0) return { assignedNumber: candidates[index], reused: false, workdayInvoiceWid: null };
       return {
@@ -242,6 +265,7 @@ export async function reserveGeneratedInvoiceNumber(
         workdayInvoiceWid: null,
         clashedNumber: candidates[0],
         clashedAmountDue: await holderAmountDue(candidates[0]),
+        suffixed: false,
       };
     }
     if (result.raced) return result.raced;
@@ -250,7 +274,7 @@ export async function reserveGeneratedInvoiceNumber(
   const suffixBase = candidates[candidates.length - 1];
   for (let attempt = 2; attempt <= MAX_GENERATED_NUMBER_SUFFIX; attempt += 1) {
     const candidate = `${suffixBase}-${attempt}`;
-    const result = await tryReserve(candidate);
+    const result = await tryReserve(candidate, false);
     if (result.reserved) {
       return {
         assignedNumber: candidate,
@@ -258,6 +282,7 @@ export async function reserveGeneratedInvoiceNumber(
         workdayInvoiceWid: null,
         clashedNumber: suffixBase,
         clashedAmountDue: await holderAmountDue(suffixBase),
+        suffixed: true,
       };
     }
     if (result.raced) return result.raced;

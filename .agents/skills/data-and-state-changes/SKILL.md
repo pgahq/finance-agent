@@ -49,8 +49,12 @@ suffixed resend, `contested` set on the row of a number a sibling tried to take,
 `reserveGeneratedInvoiceNumber` takes ordered candidates (invoice-date number,
 then service-date number) and inserts the first free one, then `-2`, `-3` on
 the last candidate on conflict, so parallel sibling clusters never pick the same
-number; each clash marks the holder's row `contested`. A document hash already
-reserved returns its earlier number whatever candidates this run generated.
+number; a clash from a document that has a later candidate of its own marks the
+holder's row `contested` (a clash that goes straight to a suffix does not, so the
+holder never moves off a number whose `-2` sibling stays). A document hash
+already reserved returns its earlier number whatever candidates this run
+generated, with the clashed number named only while another row of the
+conversation and supplier still holds it.
 `settleGeneratedInvoiceNumber` renames a contested row (no Workday invoice yet)
 to the holder's service-date number when that number is free.
 `recordGeneratedInvoiceNumberInvoice` stores the Workday WID after create.
