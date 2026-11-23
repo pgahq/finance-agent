@@ -448,6 +448,10 @@ export function formatRepeatedLineNotes(note: string | undefined): string {
   return note ? `\n\nRepeated line review: ${note}` : '';
 }
 
+export function formatBreakdownRowNotes(note: string | undefined): string {
+  return note ? `\n\nBreakdown rows review: ${note}` : '';
+}
+
 export function formatTotalsChargeReviewNotes(note: string | undefined): string {
   return note ? `\n\nTotals charge review: ${note}` : '';
 }

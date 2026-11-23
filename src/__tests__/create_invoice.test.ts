@@ -29,6 +29,7 @@ import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin
 import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooFreeRow, mobileKangarooHeader, mobileKangarooRows } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
+import { supin477265Header, supin477265Rows } from './fixtures/supin_477265.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 import { payrollRechargeHeader, payrollRechargePoLine, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
 
@@ -1597,6 +1598,82 @@ describe('create_invoice', () => {
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062EsignRow]);
       expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+  });
+
+  describe('SUPIN-477265 usage total printed with its tier rows and two tax rows', () => {
+    const built = (rows: Array<{ description: string; extendedAmount: number }>) => ({
+      lines: rows.map((row, index) => ({ lineOrder: index + 1, description: row.description, quantity: 0, unitCost: 0, extendedAmount: row.extendedAmount })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+    const enrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...supin477265Header,
+      extractedInvoiceLines: supin477265Rows,
+      ...overrides
+    });
+
+    it('books the usage once, adds both tax rows to header tax, and reconciles to the amount due', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment());
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([
+        { description: 'Remaining time on Phone Numbers Activated US', extendedAmount: 1.8 },
+        { description: 'Unused time on Phone Numbers Activated US', extendedAmount: -0.01 },
+        { description: 'SMS Sent/Received US - Oct 21–Nov 21, 2026', extendedAmount: 157 },
+      ]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-intercom-tiers/invoice.pdf')] } as any);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      expect(candidates.map((line: { totalPrice: string }) => line.totalPrice)).toEqual(['$1.80', '-$0.01', '$0.00', '$157.00']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('10.49');
+      expect(submitArgs.extractedAmountDue).toBe('$169.28');
+      expect(submitArgs.finalLines.map((line: { extendedAmount: number }) => line.extendedAmount)).toEqual([1.8, -0.01, 157]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Breakdown rows review: Left off rows that break down a charge printed above them: "SMS Sent/Received US - Oct 21–Nov 21, 2026" $157.00 is already the sum of "Flat fee for next 6,001 to 7,500" $33.00');
+      expect(notes).toContain('Tax Amount (from document): 10.49 ("TX STATE TAX - TEXAS (6.25% on $127.03)" $7.94 + "TX CITY TAX - FRISCO (2% on $127.03)" $2.55)');
+      expect(notes).not.toContain('Line subtotal review');
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('but the amount due is');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([expect.stringMatching(/^Breakdown rows review: Left off rows that break down/)]);
+      expect(slackDetails.amountMismatch).toBeUndefined();
+    });
+
+    it('keeps every row and the amount check when the tier rows do not reconcile to the printed subtotal', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedLineSubtotal: { label: 'Total excluding tax', amount: '$100.00' },
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([{ description: 'Usage', extendedAmount: 315.79 }]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-intercom-tiers-off/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(9);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).not.toContain('Breakdown rows review');
+    });
+
+    it('adds the city tax from the printed subtotal even when the lines are wrong, and still flags the lines', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedAmountDue: '$134,979.27',
+        extractedTaxAmount: '$6,331.12',
+        extractedLineSubtotal: { label: 'Subtotal', amount: '$126,622.20' },
+        extractedOtherCharges: [{ label: 'TX CITY TAX - FRISCO (2% on $101,297.76)', amount: '$2,025.95' }],
+        extractedInvoiceLines: [{ description: 'Seats', quantity: null, unitCost: null, totalPrice: '$194,364.00', hasDiscount: false, tableNumber: 1, sectionLabel: null }],
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([{ description: 'Seats', extendedAmount: 194364 }]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-intercom-discounts/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('8357.07');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('so the printed "Subtotal" $126,622.20, freight, and tax equal the amount due. The invoice lines did not match that subtotal and are checked separately.');
+      expect(notes).toContain('Line subtotal review');
     });
   });
 

@@ -19,6 +19,7 @@ import {
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatFreeRowsNotes,
+  formatBreakdownRowNotes,
   formatLinePriceReviewNotes,
   formatLineTotalReviewNotes,
   formatTotalsChargeReviewNotes,
@@ -71,7 +72,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, removeBreakdownRows, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { hasPrintedRetainage, reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -396,7 +397,6 @@ async function processInvoice(
     });
     if (placedCharges.placed.length) debug('Placed on PO service lines', placedCharges.placed);
     const printedLines = placedCharges.lines;
-    const printedRowCount = extractedRows.length + payrollTaxCharges.addedLines + placedCharges.addedLines;
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
@@ -417,11 +417,34 @@ async function processInvoice(
     // the lines above); clear it here too so it never reaches header tax, the same as a printed $0.00 would.
     const headerTaxCleared = resolvedHeaderTaxCleared || payrollTaxCharges.taxCleared === true;
     const resolvedTaxAmount = headerTaxCleared ? undefined : resolvedHeaderTaxAmount;
+    const settlementPrinted = hasPrintedSettlement({
+      extractedPartialPayment: result.extractedPartialPayment,
+      extractedPriorPayments: result.extractedPriorPayments,
+      extractedRetainage: result.extractedRetainage,
+      emailBalanceDue: result.emailBalanceDue,
+    });
+    // A charge printed with its own breakdown under it (a usage total and its tier rows) is booked once, at the level
+    // that matches the printed subtotal. Annotate-only runs submit no lines, so they keep every printed row.
+    const breakdown = canModifyInvoice && submitSupplierWID && !chargeWithheld
+      ? removeBreakdownRows(printedLines, {
+        lineSubtotal: result.extractedLineSubtotal,
+        amountDue: extractedAmountDue,
+        freight: headerFreightCleared ? undefined : resolvedFreightAmount,
+        tax: resolvedTaxAmount,
+        taxLabel: result.extractedTaxLabel,
+        printedTaxCharges: placedCharges.otherCharges,
+        settlementPrinted,
+        poLines,
+      })
+      : { lines: printedLines, removed: [] as typeof printedLines, note: undefined };
+    if (breakdown.note) debug(`Breakdown rows: ${breakdown.note}`);
+    const breakdownLines = breakdown.lines;
+    const printedRowCount = extractedRows.length + payrollTaxCharges.addedLines + placedCharges.addedLines - breakdown.removed.length;
     // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
     // line total that is not quantity x unit price may have a misread total; each is read that way only when
     // that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
     // printed ones and the Amount check.
-    const { lines: extractedLines, note: linePriceNote } = canModifyInvoice && submitSupplierWID ? reinterpretSinglePriceLinesForCharges(printedLines, {
+    const { lines: extractedLines, note: linePriceNote } = canModifyInvoice && submitSupplierWID ? reinterpretSinglePriceLinesForCharges(breakdownLines, {
       amountDue: extractedAmountDue,
       freight: resolvedFreightAmount,
       tax: resolvedTaxAmount,
@@ -429,17 +452,12 @@ async function processInvoice(
       freightCleared: headerFreightCleared,
       taxCleared: headerTaxCleared,
       chargeWithheld,
-      summaryChargesPlaceable: printedLines.length === printedRowCount,
+      summaryChargesPlaceable: breakdownLines.length === printedRowCount,
       printedTaxCharges: placedCharges.otherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
-      settlementPrinted: hasPrintedSettlement({
-        extractedPartialPayment: result.extractedPartialPayment,
-        extractedPriorPayments: result.extractedPriorPayments,
-        extractedRetainage: result.extractedRetainage,
-        emailBalanceDue: result.emailBalanceDue,
-      }),
+      settlementPrinted,
       lineSubtotal: result.extractedLineSubtotal,
-    }) : { lines: printedLines, note: undefined };
+    }) : { lines: breakdownLines, note: undefined };
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.
     const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && submitSupplierWID ? extractedLines : [], {
@@ -459,6 +477,8 @@ async function processInvoice(
       taxCleared: headerTaxCleared,
       chargeWithheld,
       poLines,
+      lineSubtotal: result.extractedLineSubtotal,
+      settlementPrinted,
     });
     const { taxAmount: extractedTaxAmount, taxCleared } = taxCharges;
     const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
@@ -707,7 +727,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatBreakdownRowNotes(breakdown.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const currencyFellBack = submissionFallbacks.some((fallback) => fallback.field === 'currency');
