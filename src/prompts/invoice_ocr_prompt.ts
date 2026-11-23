@@ -29,9 +29,13 @@ const ocrInvoiceLine = z.object({
   sectionLabel: printedText(extractedLine.sectionLabel),
 });
 
+// The contact person is not used by any matching or note logic, and dropping it keeps the structured-output
+// grammar under Anthropic's size limit now that the service date is also extracted.
+const { contactPerson: _contactPerson, ...printedSupplierFields } = enrichment.supplier.shape.extractedInformation.shape;
+
 export const InvoiceOcrSchema = z.object({
   printedSupplier: z.object({
-    ...printedTextShape(enrichment.supplier.shape.extractedInformation.shape),
+    ...printedTextShape(printedSupplierFields),
     remitToAddress: z.string().describe('The remit-to or payment address printed on the invoice when it differs from the supplier street address. Empty string if none is printed.'),
   }).describe('The supplier (vendor) exactly as printed on the invoice'),
   printedBillTo: z.object(printedTextShape(enrichment.companyVerification.shape.extractedInformation.shape))
@@ -271,7 +275,7 @@ For any text field that is not printed on the document, return an empty string; 
 ## Part 1: Supplier as printed
 
 Populate \`printedSupplier\` with the supplier (vendor) details printed on the invoice:
-- supplierName, street address, phone, email, tax ID or EIN, website, and contact person
+- supplierName, street address, phone, email, tax ID or EIN, website
 - remitToAddress when a separate remit-to or payment address is printed, starting with the payee company name exactly as printed (for example "SiteOne Landscape Supply, LLC, 24110 Network Place, Chicago, IL 60673-1241")
 - industry only when the document makes the business type clear
 - memo: a few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "office supplies"). No ending period, and do not name PGA, the venue, or the location the service is for. If not clear, or if it would only repeat the supplier name or an identifier, leave the memo empty. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.

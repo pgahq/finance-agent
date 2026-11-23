@@ -866,7 +866,6 @@ export function reimbursementOcr(reimbursement: AppliedReimbursement): InvoiceOc
       website: null,
       taxId: null,
       industry: null,
-      contactPerson: null,
       memo: null,
       remitToAddress: null,
     },

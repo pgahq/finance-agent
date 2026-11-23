@@ -59,7 +59,6 @@ const ocrResult: InvoiceOcrResult = {
     taxId: '12-3456789',
     website: null,
     industry: 'Privacy consulting',
-    contactPerson: null,
     memo: 'Privacy consulting services for the week of Sept 28',
   },
   printedBillTo: {
@@ -117,7 +116,6 @@ const ocrResponse: InvoiceOcrResponse = {
     taxId: '12-3456789',
     website: '',
     industry: 'Privacy consulting',
-    contactPerson: '',
     memo: 'Privacy consulting services for the week of Sept 28',
   },
   printedBillTo: {

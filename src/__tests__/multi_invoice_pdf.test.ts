@@ -53,7 +53,7 @@ function attachment(fileName: string, buffer: Buffer): PresignedAttachment {
 function ocrResponseFor(numbers: string[], amountDue: string, poNumber: string): InvoiceOcrResponse {
   return {
     printedSupplier: {
-      supplierName: 'LevelBlue, LLC', address: '', remitToAddress: '', phone: '', email: '', taxId: '', website: '', industry: '', contactPerson: '', memo: '',
+      supplierName: 'LevelBlue, LLC', address: '', remitToAddress: '', phone: '', email: '', taxId: '', website: '', industry: '', memo: '',
     },
     printedBillTo: { companyName: 'The PGA of America', address: '', phone: '', email: '' },
     extractedInvoiceDate: '2026-03-03',

@@ -377,7 +377,7 @@ export function mergeInvoiceEnrichment(
         taxId: printed.taxId,
         website: printed.website,
         industry: printed.industry,
-        contactPerson: printed.contactPerson,
+        contactPerson: null,
         memo: printed.memo,
       },
     },
