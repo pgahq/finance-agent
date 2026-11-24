@@ -2327,6 +2327,79 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('printed tax rate with no printed tax amount (fictional)', () => {
+    const { supin477515Header, supin477515Rows, supin477515Tax, supin477515Detail } = require('./fixtures/supin_477515.js');
+    const finalLines = {
+      lines: [
+        { lineOrder: 1, description: 'Assorted frozen pops with toppings', quantity: 120, unitCost: 3.5, extendedAmount: 420 },
+        { lineOrder: 2, description: 'Setup and serving fees', quantity: 1, unitCost: 140, extendedAmount: 140 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    };
+
+    it('books the tax from the printed rate as header Tax_Amount, with a note and no amount mismatch', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin477515Header,
+        extractedInvoiceLines: supin477515Rows,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(finalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-rate-tax/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe(supin477515Tax);
+      expect(submitArgs.taxCleared).toBe(false);
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([420, 140]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(`Tax Amount (computed from printed rate): ${supin477515Tax} (${supin477515Detail})`);
+      expect(notes).toContain(`Amount check: ${supin477515Detail}, so lines, freight, and tax equal the amount due.`);
+      expect(notes).not.toContain('Tax Amount (from document)');
+      expect(notes).not.toContain('but the amount due is');
+      expect(notes).not.toContain('Line total review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.amountMismatch).toBeUndefined();
+      expect(slackDetails.extracted.taxAmount).toBe(supin477515Tax);
+      expect(slackDetails.extracted.taxComputedFromRate).toBe(true);
+    });
+
+    it('keeps the amount mismatch when the printed rate does not explain the gap', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin477515Header,
+        extractedTaxRate: '6%',
+        extractedInvoiceLines: supin477515Rows,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(finalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-rate-mismatch/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.buildNotes([])).not.toContain('computed from printed rate');
+    });
+
+    it('keeps a printed tax amount over the rate', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin477515Header,
+        extractedTaxAmount: '$44.13',
+        extractedTaxLabel: 'Sales Tax',
+        extractedInvoiceLines: supin477515Rows,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(finalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-rate-printed/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('$44.13');
+      expect(submitArgs.buildNotes([])).toContain('Tax Amount (from document): $44.13');
+    });
+  });
+
   describe('payroll recharge invoice (fictional)', () => {
     const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
     const mergeAsExtracted = (lines: Array<{ description: string; totalPrice: string | null }>) => Promise.resolve({

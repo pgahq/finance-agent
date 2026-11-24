@@ -250,6 +250,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     taxAmount?: string;
+    /** The tax was computed from the printed rate, not read from a printed tax amount. */
+    taxComputedFromRate?: boolean;
     freightCleared?: boolean;
     taxCleared?: boolean;
     purchaseOrderNumber?: string;
@@ -268,7 +270,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (extracted?.freightCleared) changeLines.push('*Freight* → none');
   else if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
   if (extracted?.taxCleared) changeLines.push('*Tax* → none');
-  else if (extracted?.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
+  else if (extracted?.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}${extracted.taxComputedFromRate ? ' (computed from printed rate)' : ''}`);
   if (extracted?.purchaseOrderNumber) {
     const line = extracted.purchaseOrderLine ? ` Line ${extracted.purchaseOrderLine}` : '';
     const replaced = extracted.invoicePurchaseOrderNumber
@@ -857,6 +859,8 @@ export interface EnrichmentNotification {
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     taxAmount?: string;
+    /** The tax was computed from the printed rate, not read from a printed tax amount. */
+    taxComputedFromRate?: boolean;
     freightCleared?: boolean;
     taxCleared?: boolean;
     purchaseOrderNumber?: string;
@@ -959,7 +963,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   if (extracted.freightCleared) changeLines.push('*Freight* → none');
   else if (extracted.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
   if (extracted.taxCleared) changeLines.push('*Tax* → none');
-  else if (extracted.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
+  else if (extracted.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}${extracted.taxComputedFromRate ? ' (computed from printed rate)' : ''}`);
   if (extracted.purchaseOrderNumber) {
     const lineSuffix = poLineCount !== undefined ? ` · ${poLineCount} line${poLineCount !== 1 ? 's' : ''} from PO` : '';
     const source = extracted.invoicePurchaseOrderNumber ? ` (from email; invoice shows ${extracted.invoicePurchaseOrderNumber})` : '';

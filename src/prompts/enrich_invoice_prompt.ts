@@ -115,6 +115,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedTaxLabel: z.string().nullable().describe('The exact label on the invoice for the tax amount (e.g. "Sales Tax", "VAT", "GST"). Null if no tax amount was found.'),
 
+  extractedTaxRate: z.string().nullable().optional().describe('The single sales or use tax rate the invoice prints, exactly as printed with its percent sign (e.g. "7.5%"). Null when no rate is printed, when more than one tax rate is printed, or when the only rates are for other charges. Never compute an amount from it.'),
+
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),
@@ -255,7 +257,7 @@ You have access to nine search tools:
 - **findSpendCategories**: Search our spend categories database by name or reference to look up spend categories in Workday.
 - **resolveReferenceCode**: Look up a short code (e.g. "912", "72200") across cached companies, cost centers, funds, LOBs, and spend categories. Exact metadata matches win; otherwise use \`topMatch.type\` as the object-type hint. Do not copy an inexact match (confidence below 1.0) into company workdayId or referenceId. Use this before assuming a bare number is a cost center.
 
-You do not see the invoice documents. A separate OCR pass has already read them, and its output follows as "Invoice document extraction" JSON: \`printedSupplier\` (name, street and remit-to address, phone, email, tax ID, website, memo), \`printedBillTo\` (the billed company name and address), and the header fields, amounts, and lines. Treat those printed values as what the document shows. Do not invent document details the extraction does not contain.
+You do not see the invoice documents. A separate OCR pass has already read them, and its output follows as "Invoice document extraction" JSON: \`printedSupplier\` (name, street and remit-to address, phone, email, tax ID, memo), \`printedBillTo\` (the billed company name and address), and the header fields, amounts, and lines. Treat those printed values as what the document shows. Do not invent document details the extraction does not contain.
 
 ---
 
@@ -265,7 +267,7 @@ Your supplier task depends on whether an existing supplier is already assigned t
 
 ### If NO existing supplier is assigned — Identify the supplier:
 
-1. **Use the printed supplier**: Take the supplier details from \`printedSupplier\` in the invoice document extraction (name, street and remit-to address, phone, email, tax ID, website) and copy them, with the memo, into \`extractedInformation\`. Use every printed detail as matching evidence.
+1. **Use the printed supplier**: Take the supplier details from \`printedSupplier\` in the invoice document extraction (name, street and remit-to address, phone, email, tax ID) and copy them, with the memo, into \`extractedInformation\`. Use every printed detail as matching evidence.
 2. **Search Workday**: Use the findSuppliers tool to search for matching suppliers. Always run one name-only query first: the printed company name alone, with no address, phone, or industry, because a long combined query ranks suppliers by shared topic words and can bury the right record. Then search the other printed details as needed. Judge a result by its distinctive words (a rare word in the printed name such as a surname or brand), not by common words such as Golf, Mountain, or Rocky. When a result's name has the same distinctive word as the printed name, do not discard it only because the rest of the name, address, or phone differs; mention it in your reason.
 3. **Analyze Results**: Determine the best match and identify any potential duplicates
 4. **Make Recommendation**: Suggest the appropriate action based on your findings

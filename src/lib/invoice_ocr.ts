@@ -6,8 +6,8 @@ import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
 import { amountDueGapCents, amountDueShortfallCents, isRetainageHeldLabel, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
-import { isPayrollTaxCharge, isTaxLikeChargeLabel, summaryCreditCents, type PayrollTaxContext } from './header_charges.js';
-import { formatChargeDollars, normalizeLabel } from './invoice_lines.js';
+import { deriveTaxFromPrintedRate, hasPrintedSettlement, isPayrollTaxCharge, isTaxLikeChargeLabel, summaryCreditCents, type PayrollTaxContext } from './header_charges.js';
+import { chargeAmount, formatChargeDollars, normalizeLabel } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
   fileName: string;
@@ -247,11 +247,25 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
   const lines = result.extractedInvoiceLines ?? [];
   const summed = sumExtractedLineCents(lines);
   if (summed === undefined) return undefined;
+  // A tax the printed rate and the amount due agree on is not a missing row, so it does not call for a second read.
+  const rateTax = deriveTaxFromPrintedRate(
+    { taxAmount: result.extractedTaxAmount ?? undefined, taxCleared: chargeAmount(result.extractedTaxAmount) === 0 },
+    {
+      rate: result.extractedTaxRate,
+      amountDue: result.extractedAmountDue,
+      lines,
+      freight: result.extractedFreightAmount ?? undefined,
+      summaryCharges: result.extractedSummaryCharges,
+      taxCharges: result.extractedOtherCharges,
+      taxLabel: result.extractedTaxLabel,
+      settlementPrinted: hasPrintedSettlement({ ...result, emailBalanceDue: null }),
+    }
+  );
   const gapInput = {
     lines,
     amountDue: result.extractedAmountDue,
     freight: result.extractedFreightAmount,
-    tax: result.extractedTaxAmount,
+    tax: rateTax.taxAmount ?? result.extractedTaxAmount,
     taxLabel: result.extractedTaxLabel,
     otherCharges: result.extractedOtherCharges,
     summaryCharges: result.extractedSummaryCharges,
@@ -344,6 +358,7 @@ export function mergeInvoiceEnrichment(
       extractedFreightLabel: null,
       extractedTaxAmount: null,
       extractedTaxLabel: null,
+      extractedTaxRate: null,
       extractedOtherCharges: null,
       extractedSummaryCharges: null,
       extractedLineSubtotal: null,
@@ -375,7 +390,7 @@ export function mergeInvoiceEnrichment(
         phone: printed.phone,
         email: printed.email,
         taxId: printed.taxId,
-        website: printed.website,
+        website: null,
         industry: printed.industry,
         contactPerson: null,
         memo: printed.memo,
@@ -393,6 +408,7 @@ export function mergeInvoiceEnrichment(
     extractedFreightLabel: ocr.extractedFreightLabel,
     extractedTaxAmount: ocr.extractedTaxAmount,
     extractedTaxLabel: ocr.extractedTaxLabel,
+    extractedTaxRate: ocr.extractedTaxRate,
     extractedOtherCharges: ocr.extractedOtherCharges,
     extractedSummaryCharges: ocr.extractedSummaryCharges,
     extractedLineSubtotal: ocr.extractedLineSubtotal,
