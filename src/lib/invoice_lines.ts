@@ -1131,8 +1131,9 @@ export function restoreClearedFreightFromRows(
 }
 
 /**
- * Header freight that was never printed as one amount but summed from several delivery rows. The notes label a
- * header freight "from document", so AP needs to see which rows made up the number.
+ * Header freight that was never printed as one amount but summed from several freight rows. The notes label a
+ * header freight "from document", so AP needs to see which rows made up the number. A freight row with no
+ * positive readable amount leaves the lines without adding to the sum, so it is named separately.
  */
 export function freightFromRowsMessage(
   extractedLines: ExtractedInvoiceLine[],
@@ -1141,9 +1142,14 @@ export function freightFromRowsMessage(
   if (charges.headerFreightRead) return undefined;
   const { freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);
   const submitted = chargeAmount(charges.freight);
-  if (freightLines.length < 2 || freightAmountFromLines == null || submitted == null) return undefined;
-  if (toCents(submitted) !== toCents(freightAmountFromLines)) return undefined;
-  return `Freight ${formatChargeDollars(submitted)} is the sum of these ${freightLines.length} delivery rows, which are not invoice lines: ${describeRemovedLines(freightLines)}.`;
+  if (freightAmountFromLines == null || submitted == null || toCents(submitted) !== toCents(freightAmountFromLines)) return undefined;
+  const summed = freightLines.filter(line => (signedChargeLineAmount(line) ?? 0) > 0);
+  if (summed.length < 2) return undefined;
+  const unsummed = freightLines.filter(line => !summed.includes(line));
+  const unsummedNote = unsummed.length
+    ? ` Also left out of the lines with no positive readable amount, so check them against the document: ${describeRemovedLines(unsummed)}.`
+    : '';
+  return `Freight ${formatChargeDollars(submitted)} is the sum of these ${summed.length} freight rows, which are not invoice lines: ${describeRemovedLines(summed)}.${unsummedNote}`;
 }
 
 export function resolveHeaderChargeAmounts(options: {

@@ -2713,7 +2713,7 @@ describe('enrich_invoice', () => {
       const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
       expect(params).toEqual(expect.objectContaining({ extractedFreightAmount: '170', freightCleared: false }));
       expect(params.buildNotes([])).toContain(
-        'Amount check: Freight $170.00 is the sum of these 2 delivery rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
+        'Amount check: Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
       );
     });
   });

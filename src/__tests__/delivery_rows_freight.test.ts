@@ -70,6 +70,11 @@ describe('delivery rows with a supplier charge code', () => {
   it('keeps a delivery-tax row out of header freight so the tax handling still sees it', () => {
     expect(splitFreightLines([unleaded, row('ABC - Delivery Tax', 1, '2.00', '$2.00')]).freightLines).toEqual([]);
   });
+
+  it('accepts any two-to-four-letter code before a delivery row, and still keeps merchandise lookalikes as lines', () => {
+    expect(splitFreightLines([row('AB - Delivery Fee', 1, '9.00', '$9.00')]).freightAmountFromLines).toBe(9);
+    expect(splitFreightLines([row('AB - Delivery Fee Schedule', 1, '9.00', '$9.00'), row('AB - Freight Container', 1, '9.00', '$9.00')]).freightLines).toEqual([]);
+  });
 });
 
 describe('delivery rows on a PO', () => {
@@ -110,7 +115,7 @@ describe('freightFromRowsMessage', () => {
 
   it('names the rows that were summed into freight the invoice never printed as one amount', () => {
     expect(freightFromRowsMessage(rows, { freight: '170', headerFreightRead: false })).toBe(
-      'Freight $170.00 is the sum of these 2 delivery rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
+      'Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
     );
   });
 
@@ -119,5 +124,21 @@ describe('freightFromRowsMessage', () => {
     expect(freightFromRowsMessage([unleaded, delivery], { freight: '160', headerFreightRead: false })).toBeUndefined();
     expect(freightFromRowsMessage(rows, { freight: '25', headerFreightRead: false })).toBeUndefined();
     expect(freightFromRowsMessage(rows, { freight: undefined, headerFreightRead: false })).toBeUndefined();
+  });
+
+  it('counts only the rows with a readable amount and names the others, so an unreadable freight row is never hidden', () => {
+    const unpriced = { description: 'QRS - Delivery Fee', descriptionCells: null, quantity: null, unitCost: null, totalPrice: null, hasDiscount: false } as ExtractedInvoiceLine;
+    expect(splitFreightLines([unleaded, delivery, hazmatDelivery, unpriced]).freightLines).toHaveLength(3);
+    expect(freightFromRowsMessage([unleaded, delivery, hazmatDelivery, unpriced], { freight: '170', headerFreightRead: false })).toBe(
+      'Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
+      + ' Also left out of the lines with no positive readable amount, so check them against the document: "QRS - Delivery Fee" ($0.00).'
+    );
+  });
+
+  it('reads a row priced only by quantity and unit cost, and says nothing for a credit that makes the sum another amount', () => {
+    const byUnitCost = { ...delivery, totalPrice: null };
+    expect(splitFreightLines([unleaded, byUnitCost, hazmatDelivery]).freightAmountFromLines).toBe(170);
+    const credit = { ...hazmatDelivery, description: 'XYZ - Delivery Fee Credit', totalPrice: '-$10.00', unitCost: '-10.00' };
+    expect(freightFromRowsMessage([unleaded, delivery, credit], { freight: '170', headerFreightRead: false })).toBeUndefined();
   });
 });

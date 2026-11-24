@@ -2763,7 +2763,7 @@ describe('create_invoice', () => {
     expect(submitArgs.extractedTaxAmount).toBe('$14.10');
     expect(submitArgs.freightAsLines).toBeFalsy();
     expect(submitArgs.buildNotes([])).toContain(
-      'Amount check: Freight $170.00 is the sum of these 2 delivery rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
+      'Amount check: Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
     );
   });
 
@@ -3731,6 +3731,26 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('Added "PROPERTY TAX SURCHARGE');
       expect(notes).not.toContain('Amount check');
       expect(notes).not.toContain('may be a row that was not read');
+    });
+
+    it('keeps a supplier-coded delivery row on its PO service line and sends the coded hazmat delivery fee to header freight', async () => {
+      const { workday, invoiceLines } = await run(
+        { ...supin472110Header, extractedAmountDue: '$816.00', extractedTaxAmount: '$6.00', extractedLineSubtotal: null },
+        [
+          { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+          { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+          { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+        ]
+      );
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((line: any) => line.description)).toEqual(['Unleaded Fuel', 'ABC - Delivery Charge']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.find((line: any) => line.description === 'ABC - Delivery Charge')).toMatchObject({ purchaseOrderLineId: DELIVERY_LINE, extendedAmount: 160 });
+      expect(submitArgs.finalLines).toHaveLength(2);
+      expect(submitArgs.extractedFreightAmount).toBe('10');
+      expect(submitArgs.freightAsLines).toBeFalsy();
+      expect(submitArgs.extractedTaxAmount).toBe('$6.00');
+      expect(submitArgs.buildNotes([])).not.toContain('is the sum of these');
     });
   });
 
