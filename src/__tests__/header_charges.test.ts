@@ -1595,7 +1595,21 @@ describe('deriveTaxFromPrintedRate', () => {
     expect(derived).toEqual(none);
   });
 
-  it('reads the rate out of a printed label', () => {
+  it('reads the rate out of the printed rate text', () => {
     expect(derive({ rate: 'Tax Rate 5.0%' }).taxAmount).toBe('5.00');
+  });
+
+  it('keeps an unlabeled printed zero tax, which normalization does not mark as cleared', () => {
+    const zero = { taxAmount: '0.00', taxCleared: false };
+
+    expect(derive({}, zero)).toBe(zero);
+  });
+
+  it.each(['.5%', '7,5%', '112.5%', '1.5.5%'])('does not read the rate from "%s", which has a stray digit, dot, or comma before it', rate => {
+    expect(derive({ rate }).computedFromRate).toBeUndefined();
+  });
+
+  it('reads a rate with a leading text and a space before the percent sign', () => {
+    expect(derive({ rate: 'TAX (5 %)' }).taxAmount).toBe('5.00');
   });
 });

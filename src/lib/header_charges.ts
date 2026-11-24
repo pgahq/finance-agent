@@ -542,7 +542,8 @@ const MAX_PRINTED_TAX_RATE_PERCENT = 30;
 
 // The one percentage in the text, or undefined when none or several are printed.
 function parsePrintedTaxRate(raw: string | null | undefined): number | undefined {
-  const matches = [...(raw ?? '').matchAll(/(\d{1,2}(?:\.\d{1,4})?)\s*%/g)];
+  // No digit, dot, or comma may sit right before the number, so ".5%", "7,5%", and "112.5%" are not read as 5, 5, and 12.5.
+  const matches = [...(raw ?? '').matchAll(/(?<![\d.,])(\d{0,2}(?:\.\d{1,4})?)\s*%/g)].filter(match => match[1] && match[1] !== '.');
   if (matches.length !== 1) return undefined;
   const rate = Number(matches[0][1]);
   return rate > 0 && rate <= MAX_PRINTED_TAX_RATE_PERCENT ? rate : undefined;
@@ -575,7 +576,7 @@ export function deriveTaxFromPrintedRate(applied: AppliedTaxCharges, input: {
   classificationLines?: PayrollTaxContext['lines'];
   poLines?: PayrollTaxContext['poLines'];
 }): AppliedTaxCharges {
-  if (applied.taxCleared || (chargeAmount(applied.taxAmount) ?? 0) > 0) return applied;
+  if (applied.taxCleared || chargeAmount(applied.taxAmount) != null) return applied;
   if (input.chargeWithheld || input.settlementPrinted || input.payrollTaxPlaced) return applied;
   const rate = parsePrintedTaxRate(input.rate);
   const amountDue = chargeAmount(input.amountDue);
