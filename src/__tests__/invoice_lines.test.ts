@@ -1617,6 +1617,10 @@ describe('isFreightOrHandlingLine', () => {
     'ABC - XYZ - Delivery Charge',
     'ABCDE - Delivery Charge',
     'A - Delivery Charge',
+    'Tax - Delivery Charge',
+    'TAX - Freight',
+    'VAT - Shipping',
+    'Sales Tax - Delivery Charge',
   ])('does not treat %s as a freight/handling charge (code prefix and qualifier words need a freight word)', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(false);
   });
@@ -3667,6 +3671,15 @@ describe('resolveHeaderChargeAmounts', () => {
     expect(result.extractedFreightAmount).toBe('15');
     expect(result.freightCleared).toBe(false);
     expect(parseFloat(result.extractedTaxAmount!.replace('$', ''))).toBe(510.86);
+  });
+
+  it('flags freight that is the sum of freight rows, and not freight the document printed', () => {
+    expect(resolveHeaderChargeAmounts({ freightAmountFromLines: 25 }).freightFromRows).toBe(true);
+    expect(resolveHeaderChargeAmounts({ extractedFreightAmount: '  ', freightAmountFromLines: 25 }).freightFromRows).toBe(true);
+    expect(resolveHeaderChargeAmounts({ extractedFreightAmount: '$510.86', extractedFreightLabel: 'Sales Tax', freightAmountFromLines: 15 }).freightFromRows).toBe(true);
+    expect(resolveHeaderChargeAmounts({ extractedFreightAmount: '12.00', extractedFreightLabel: 'Shipping', freightAmountFromLines: 25 }).freightFromRows).toBeUndefined();
+    expect(resolveHeaderChargeAmounts({ extractedFreightAmount: '0.00', extractedFreightLabel: 'Shipping', freightAmountFromLines: 25 }).freightFromRows).toBeUndefined();
+    expect(resolveHeaderChargeAmounts({}).freightFromRows).toBeUndefined();
   });
 
   it('keeps freight cleared when a tax-field row labeled Shipping printed zero, even with shipping lines', () => {

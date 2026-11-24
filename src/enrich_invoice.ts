@@ -407,6 +407,7 @@ async function processInvoice(
       taxCleared: resolvedHeaderTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
+      freightFromRows: headerFreightFromRows,
     } = resolveHeaderChargeAmounts({
       extractedFreightAmount: placedCharges.freightAmount,
       extractedFreightLabel: placedCharges.freightLabel,
@@ -496,7 +497,7 @@ async function processInvoice(
     const checkedReconciliation = submitsLines
       ? chargeReconciliation
       : extractedChargeReconciliation(extractedLines, extractedCharges);
-    const freightRowsMessage = submitsLines && !restoredFreight.message && !freightAsLines ? freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: Boolean(placedCharges.freightAmount?.trim()) }) : undefined;
+    const freightRowsMessage = submitsLines && !restoredFreight.message && !freightAsLines ? freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: !headerFreightFromRows }) : undefined;
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
       ...(freightRowsMessage ? [freightRowsMessage] : []),

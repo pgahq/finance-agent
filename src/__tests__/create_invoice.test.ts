@@ -2767,6 +2767,39 @@ describe('create_invoice', () => {
     );
   });
 
+  it('still names the delivery rows when the freight header read was moved out to tax', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$1,125.35',
+      extractedFreightAmount: '$14.10',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: null,
+      extractedTaxLabel: null,
+      extractedInvoiceLines: [
+        { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+        { description: 'Diesel Fuel', quantity: 1, unitCost: '301.25', totalPrice: '$301.25', hasDiscount: false },
+        { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+        { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Unleaded Fuel', quantity: 1, unitCost: 640 },
+        { lineOrder: 2, description: 'Diesel Fuel', quantity: 1, unitCost: 301.25 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-coded-delivery-rows-tax-moved/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('170');
+    expect(submitArgs.buildNotes([])).toContain('Amount check: Freight $170.00 is the sum of these 2 freight rows');
+  });
+
   it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
     const venue = {
       ID: [

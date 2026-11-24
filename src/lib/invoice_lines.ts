@@ -371,8 +371,10 @@ function isFreightOrHandlingText(description: string): boolean {
 export function isFreightOrHandlingLine(description: string | null | undefined): boolean {
   if (!description) return false;
   if (isFreightOrHandlingText(description)) return true;
-  return SUPPLIER_CHARGE_CODE_PREFIX.test(description)
-    && isFreightOrHandlingText(description.replace(SUPPLIER_CHARGE_CODE_PREFIX, ''));
+  const code = description.match(SUPPLIER_CHARGE_CODE_PREFIX)?.[0];
+  // A tax word in front of the row (`Tax - Delivery Charge`) is a tax label, which the tax handling must see.
+  if (!code || TAX_LINE_CORE_WORDS.has(code.replace(/[^A-Za-z]/g, '').toLowerCase())) return false;
+  return isFreightOrHandlingText(description.replace(SUPPLIER_CHARGE_CODE_PREFIX, ''));
 }
 
 function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
@@ -933,6 +935,8 @@ export interface NormalizedFreightAndTax {
   reviewNote?: string;
   // A read amount was not submitted, so the header keeps whatever Workday already has.
   chargeWithheld?: boolean;
+  // The freight amount is the sum of freight rows, not an amount the document printed as freight.
+  freightFromRows?: boolean;
 }
 
 function sameAmount(a: string | undefined, b: string | undefined): boolean {
@@ -1171,13 +1175,16 @@ export function resolveHeaderChargeAmounts(options: {
       ...normalized,
       extractedFreightAmount: freightFromLines,
       freightCleared: false,
+      freightFromRows: true,
       extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
     };
   }
   // Line-derived freight only fills a header with no amount read; a withheld header amount keeps the existing value.
   const lineFreight = !options.extractedFreightAmount?.trim() ? freightFromLines : undefined;
+  const freightFromRows = !normalized.freightCleared && normalized.extractedFreightAmount == null && lineFreight != null;
   return {
     ...normalized,
+    ...(freightFromRows ? { freightFromRows } : {}),
     extractedFreightAmount: normalized.freightCleared ? undefined : (normalized.extractedFreightAmount ?? lineFreight),
     extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
   };

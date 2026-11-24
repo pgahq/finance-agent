@@ -1247,6 +1247,7 @@ async function processInvoiceCluster(
       taxCleared: resolvedHeaderTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
+      freightFromRows: headerFreightFromRows,
     } = resolveHeaderChargeAmounts({
       extractedFreightAmount: placedCharges.freightAmount,
       extractedFreightLabel: placedCharges.freightLabel,
@@ -1326,7 +1327,7 @@ async function processInvoiceCluster(
       { allowFreightAsLines: true, removeDuplicates: true }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
-    const freightRowsMessage = restoredFreight.message || freightAsLines ? undefined : freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: Boolean(placedCharges.freightAmount?.trim()) });
+    const freightRowsMessage = restoredFreight.message || freightAsLines ? undefined : freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: !headerFreightFromRows });
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
       ...(freightRowsMessage ? [freightRowsMessage] : []),
