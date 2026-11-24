@@ -59,7 +59,6 @@ const ocrResult: InvoiceOcrResult = {
     taxId: '12-3456789',
     website: null,
     industry: 'Privacy consulting',
-    contactPerson: null,
     memo: 'Privacy consulting services for the week of Sept 28',
   },
   printedBillTo: {
@@ -91,6 +90,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
   extractedServicePeriod: 'Sept 28 - Oct 2',
+  extractedServiceDate: '2026-09-30',
   extractedPaymentTerms: { name: 'Due on receipt' },
   invoiceLineQuantityDisplayed: true,
   extractedInvoiceLines: [{
@@ -116,7 +116,6 @@ const ocrResponse: InvoiceOcrResponse = {
     taxId: '12-3456789',
     website: '',
     industry: 'Privacy consulting',
-    contactPerson: '',
     memo: 'Privacy consulting services for the week of Sept 28',
   },
   printedBillTo: {
@@ -147,6 +146,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
   extractedServicePeriod: 'Sept 28 - Oct 2',
+  extractedServiceDate: '2026-09-30',
   extractedPaymentTerms: 'Due on receipt',
   invoiceLineQuantityDisplayed: true,
   extractedInvoiceLines: [{
@@ -1441,5 +1441,20 @@ describe('invoice OCR pass', () => {
       await expect(enrichInvoiceFromAttachments({}, [pdf])).rejects.toThrow('Gateway error: 529 Overloaded');
       expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('service date reading', () => {
+  it('asks for the last service date when several are listed, and never the invoice date', () => {
+    expect(invoiceOcrPrompt).toContain('extractedServiceDate');
+    expect(invoiceOcrPrompt).toContain('return the LAST one listed in the document; for a date range, return its end date');
+    expect(invoiceOcrPrompt).toContain('never the service date');
+    expect(invoiceOcrPrompt).not.toContain('when every line item shows that same single date');
+  });
+
+  it('keeps the service date as a required string in the model schema and null in the merged result', () => {
+    expect(InvoiceOcrSchema.shape.extractedServiceDate).toBeDefined();
+    const merged = mergeInvoiceEnrichment({ supplier: {}, companyVerification: {} } as any, undefined);
+    expect(merged.extractedServiceDate).toBeNull();
   });
 });

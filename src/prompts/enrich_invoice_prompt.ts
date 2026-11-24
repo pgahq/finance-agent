@@ -170,6 +170,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedServicePeriod: z.string().nullable().describe('Billing or service period as shown on the document, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", "Week Ending", or From/To date ranges. Return the dates or period only, without the label in front of them (for example "09/28/2026 - 10/11/2026" for "Pay Date Range 09/28/2026 - 10/11/2026"). Keep the document wording for the dates; do not invent dates. Null if not visible.'),
 
+  extractedServiceDate: z.string().nullable().optional().describe('The date of service, event, or delivery that this invoice bills, normalized to YYYY-MM-DD (expand a two-digit year to 20YY). Read it from a label such as "Date of Service", "Service Date", or "Event Date", or from the Date column of the line items. When several service dates are listed, return the last one listed; for a date range, return its end date. Null when only an invoice, statement, or due date is printed, when no service date is printed, or when it is ambiguous. Never the invoice date.'),
+
   extractedPaymentTerms: z.object({
     name: z.string().describe('The payment terms as they appear on the invoice document (e.g. "Net 30", "Net 60")'),
     workdayId: z.string().nullable().describe('The Payment_Terms_ID from Workday after matching via the findPaymentTerms tool. Null if no match found.')

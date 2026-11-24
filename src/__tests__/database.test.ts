@@ -169,6 +169,10 @@ describe('Database Library', () => {
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_supplier_invoices'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_invoice_claims'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS invoice_cluster_plans'))).toBe(true);
+      expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_generated_invoice_numbers'))).toBe(true);
+      expect(initSql.some((sql) => sql.includes('UNIQUE (conversation_id, supplier_wid, document_hash)'))).toBe(true);
+      expect(initSql.some((sql) => sql.includes('ALTER TABLE conversation_generated_invoice_numbers ADD COLUMN IF NOT EXISTS amount_due'))).toBe(true);
+      expect(initSql.some((sql) => sql.includes('ALTER TABLE conversation_generated_invoice_numbers ADD COLUMN IF NOT EXISTS contested'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('UNIQUE (conversation_id, supplier_invoice_number)'))).toBe(true);
 
       const position = (fragment: string) => initSql.findIndex((sql) => sql.includes(fragment));

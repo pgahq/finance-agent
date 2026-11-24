@@ -40,6 +40,29 @@ conversation plus number, `claim_token`, `claimed_at`; a claim older than 15
 minutes can be taken over), claimed before the registry read and released by
 token afterwards.
 
+`conversation_generated_invoice_numbers` (primary key conversation, supplier
+WID, `assigned_number`; `UNIQUE (conversation_id, supplier_wid, document_hash)`;
+`base_number` the first candidate (the invoice-date number), `document_hash`
+SHA-256 of the document, `amount_due` normalized printed amount used to flag a
+suffixed resend, `contested` set on the row of a number a sibling tried to take,
+`workday_invoice_wid`) reserves agent-generated supplier invoice numbers.
+`reserveGeneratedInvoiceNumber` takes ordered candidates (invoice-date number,
+then service-date number) and inserts the first free one, then `-2`, `-3` on
+the last candidate on conflict, so parallel sibling clusters never pick the same
+number; a clash from a document that has a later candidate of its own marks the
+holder's row `contested` (a clash that goes straight to a suffix does not, so the
+holder never moves off a number whose `-2` sibling stays). A document hash
+already reserved returns its earlier number whatever candidates this run
+generated, with the clashed number named only while another row of the
+conversation and supplier still holds it.
+`settleGeneratedInvoiceNumber` renames a contested row (no Workday invoice yet)
+to the holder's service-date number when that number is free.
+`recordGeneratedInvoiceNumberInvoice` stores the Workday WID after create.
+`findGeneratedInvoicesForDocument` finds the same document under another
+supplier. It is created at cold start after the claims table, and the
+`contested` column is added with `ADD COLUMN IF NOT EXISTS`.
+`settleGeneratedInvoiceNumber` refuses to move a holder while a `-2`, `-3` suffix of its number exists, so a suffix keeps its base; a suffix inserted between that check and the update can still be stranded (best effort, no row lock). It also reports whether another row that started from the same default number has the same amount due, so the holder's note can say so. The row is reserved early in the run, before the model calls, so a run that throws or hits the Lambda timeout leaves a row with no `workday_invoice_wid`. It is not released: the error path cannot tell a run that never created an invoice from one that created it and failed to record it, and a retry of the same file reuses the row. A sibling that clashes with such an orphan takes its service-date number, and its note asks AP to rule out a resend of an invoice that may not exist. Conversations processed before this table existed have no rows.
+
 `invoice_cluster_plans` (primary key `plan_id` plus `cluster_index`;
 `conversation_id`, `file_names` JSONB, `status` pending/processing/done/failed,
 `workday_invoice_wid`, `claimed_at`) records each grouped create-invoice

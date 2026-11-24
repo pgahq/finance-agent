@@ -126,6 +126,62 @@ describe('buildJevReplyBlocks', () => {
     expect(out.match(/SUPIN-\d/g)!.length).toBeLessThanOrEqual(10);
   });
 
+  it('shows material vs convention examples with before and after values in both directions', () => {
+    const scores = [
+      score({
+        workdayInvoiceWid: 'wid-a',
+        workdayInvoiceNumber: 'SUPIN-A',
+        jevShadow: {
+          model: 'm',
+          entryDiff: [costCenter('convention', { before: 'CC-1200 Marketing', after: 'CC-1200', jev: { probability: 0.1, staticCategory: 'material' } })],
+          entryOutcome: 'submitted_clean',
+        },
+      }),
+      score({
+        workdayInvoiceWid: 'wid-b',
+        workdayInvoiceNumber: 'SUPIN-B',
+        entryDiff: [{ field: 'suppliersInvoiceNumber', before: 'INV-0O42', after: 'INV-0042', category: 'convention', agentOwned: true }],
+        jevShadow: {
+          model: 'm',
+          entryDiff: [{ field: 'suppliersInvoiceNumber', before: 'INV-0O42', after: 'INV-0042', category: 'material', agentOwned: true, jev: { probability: 0.95, staticCategory: 'convention' } }],
+          entryOutcome: 'submitted_edited',
+        },
+      }),
+    ];
+    const out = text(buildJevReplyBlocks({ ruleCallout: callout(0, 2), jevCallout: callout(0, 2), scores }));
+    expect(out).toContain('Material vs convention: examples');
+    expect(out).toContain('Rules: material (counts against the agent). Jev: convention');
+    expect(out).toContain('Cost center (line 1): `CC-1200 Marketing` → `CC-1200` · Jev 90% sure it was AP preference');
+    expect(out).toContain('Rules: convention (ignored). Jev: material');
+    expect(out).toContain('Supplier invoice number: `INV-0O42` → `INV-0042` · Jev 95% sure it was an agent error');
+  });
+
+  it('caps examples per direction and says how many more there are', () => {
+    const scores = Array.from({ length: 5 }, (_, index) => score({
+      workdayInvoiceWid: `wid-${index}`,
+      jevShadow: { model: 'm', entryDiff: [costCenter('convention', { jev: { probability: 0.1 + index / 100, staticCategory: 'material' } })], entryOutcome: 'submitted_clean' },
+    }));
+    const out = text(buildJevReplyBlocks({ ruleCallout: callout(0, 5), jevCallout: callout(5, 0), scores }));
+    expect(out.match(/sure it was AP preference/g)).toHaveLength(3);
+    expect(out).toContain('…and 2 more');
+  });
+
+  it('ranks each direction by how far Jev leaned toward the side it picked', () => {
+    const scores = [0.75, 0.2, 0.5].map((probability, index) => score({
+      workdayInvoiceWid: `wid-${index}`,
+      workdayInvoiceNumber: `SUPIN-${index}`,
+      jevShadow: { model: 'm', entryDiff: [costCenter('convention', { jev: { probability, staticCategory: 'material' } })], entryOutcome: 'submitted_clean' },
+    }));
+    const out = text(buildJevReplyBlocks({ ruleCallout: callout(0, 3), jevCallout: callout(3, 0), scores }));
+    const order = [...out.matchAll(/SUPIN-(\d).*?Jev (\d+)% sure/g)].map((match) => `${match[1]}:${match[2]}`);
+    expect(order).toEqual(['1:80', '2:50', '0:25']);
+  });
+
+  it('omits the examples when Jev reclassified nothing', () => {
+    const scores = [score({ jevShadow: { model: 'm', entryDiff: [costCenter('material')], entryOutcome: 'submitted_edited' } })];
+    expect(text(buildJevReplyBlocks({ ruleCallout: callout(0, 1), jevCallout: callout(0, 1), scores }))).not.toContain('Material vs convention: examples');
+  });
+
   it('says no invoice has a verdict yet when none does', () => {
     const out = text(buildJevReplyBlocks({ ruleCallout: callout(1, 0), jevCallout: callout(1, 0), scores: [score()] }));
     expect(out).toContain('no invoice in this period has a Jev verdict yet');

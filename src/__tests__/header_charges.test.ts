@@ -1,8 +1,9 @@
-import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollRechargeInvoice, isPayrollTaxCharge, isTaxLikeChargeLabel, placePayrollTaxCharges, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollRechargeInvoice, isPayrollTaxCharge, isTaxLikeChargeLabel, placePayrollTaxCharges, removeBreakdownRows, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooHeader } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { payrollRechargeHeader, payrollRechargePoLine, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
-import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges, type FinalInvoiceLine } from '../lib/invoice_lines.js';
+import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges, removeFreeRows, type FinalInvoiceLine } from '../lib/invoice_lines.js';
+import { supin477265CityTax, supin477265FlatFeeDescriptions, supin477265Header, supin477265Rows } from './fixtures/supin_477265.js';
 
 // SUPIN-467011: two lines, Sales Tax $28.26, a printed EnvChg tax row of $17.00, amount due $387.76.
 const lines = [
@@ -1206,5 +1207,265 @@ describe('payroll tax is not header tax', () => {
 
       expect(applied.taxAmount).toBe('45.26');
     });
+  });
+});
+
+describe('removeBreakdownRows', () => {
+  const row = (description: string, totalPrice: string, extra: Record<string, unknown> = {}) => ({
+    description, quantity: null, unitCost: null, totalPrice, hasDiscount: false, tableNumber: 1, sectionLabel: 'Usage', ...extra,
+  });
+  const subtotal = (amount: string) => ({ label: 'Subtotal', amount });
+
+  describe('SUPIN-477265 usage total printed with its tier rows', () => {
+    const printed = removeFreeRows(supin477265Rows).rows;
+    const input = {
+      lineSubtotal: supin477265Header.extractedLineSubtotal,
+      amountDue: supin477265Header.extractedAmountDue,
+      tax: supin477265Header.extractedTaxAmount,
+      taxLabel: supin477265Header.extractedTaxLabel,
+      printedTaxCharges: [supin477265CityTax],
+    };
+
+    it('books the summary row once and leaves its five flat-fee tier rows off', () => {
+      const result = removeBreakdownRows(printed, input);
+
+      expect(result.removed.map(line => line.description)).toEqual(supin477265FlatFeeDescriptions);
+      expect(result.lines.map(line => line.totalPrice)).toEqual(['$1.80', '-$0.01', '$0.00', '$157.00']);
+      expect(result.note).toBe(
+        'Left off rows that break down a charge printed above them: "SMS Sent/Received US - Oct 21–Nov 21, 2026" $157.00 is already the sum of '
+        + '"Flat fee for next 6,001 to 7,500" $33.00, "Flat fee for next 4,501 to 6,000" $33.00, "Flat fee for next 3,001 to 4,500" $33.00, '
+        + '"Flat fee for next 1,501 to 3,000" $33.00, "Flat fee for next 2 to 1,500" $25.00. '
+        + 'With them left off the lines total $158.79, the printed "Total excluding tax" $158.79.'
+      );
+    });
+
+    it('lets the tax charge close the remaining gap once the lines are right', () => {
+      const { lines } = removeBreakdownRows(printed, input);
+      const applied = applyPrintedTaxCharges({
+        charges: [supin477265CityTax], amountDue: input.amountDue, lines, tax: input.tax, taxLabel: input.taxLabel, taxCleared: false,
+      });
+
+      expect(applied.taxAmount).toBe('10.49');
+      expect(chargeReconciliationMessages(reconcileSubmittedCharges(lines, { amountDue: input.amountDue, tax: applied.taxAmount }))).toEqual([]);
+    });
+
+    it('reconciles to the amount due less freight, tax, and every printed tax row when no subtotal is printed', () => {
+      const result = removeBreakdownRows(printed, { ...input, lineSubtotal: null });
+
+      expect(result.removed).toHaveLength(5);
+      expect(result.note).toContain('the amount due less freight and tax, $158.79.');
+    });
+
+    it('leaves the rows when no subtotal is printed and the amount due is unreadable', () => {
+      expect(removeBreakdownRows(printed, { ...input, lineSubtotal: null, amountDue: null }).removed).toEqual([]);
+    });
+
+    it('does not count the same tax twice when the tax row restates header tax', () => {
+      const result = removeBreakdownRows(printed, {
+        ...input, lineSubtotal: null, printedTaxCharges: [{ label: input.taxLabel, amount: '$7.94' }, supin477265CityTax],
+      });
+      expect(result.removed).toHaveLength(5);
+    });
+  });
+
+  const group = [row('Usage total', '$100.00'), row('Tier 1', '$60.00'), row('Tier 2', '$40.00')];
+
+  it('leaves every row when the lines already equal the printed subtotal', () => {
+    const lines = [...group, row('Setup', '$100.00')];
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('$300.00') }).removed).toEqual([]);
+  });
+
+  it('leaves a coincidental sum alone when removing it does not reach the printed subtotal', () => {
+    const lines = [...group, row('Setup', '$30.00')];
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('$150.00') }).removed).toEqual([]);
+  });
+
+  it('removes the tier rows of every group that has to go to reach the subtotal', () => {
+    const second = [row('Storage total', '$50.00', { sectionLabel: 'Storage' }), row('Tier A', '$20.00', { sectionLabel: 'Storage' }), row('Tier B', '$30.00', { sectionLabel: 'Storage' })];
+    const result = removeBreakdownRows([...group, ...second], { lineSubtotal: subtotal('$150.00') });
+
+    expect(result.lines.map(line => line.description)).toEqual(['Usage total', 'Storage total']);
+    expect(result.removed).toHaveLength(4);
+  });
+
+  it('leaves the rows when two different groups would each reconcile it', () => {
+    const second = [row('Other total', '$100.00', { sectionLabel: 'Other' }), row('Other 1', '$50.00', { sectionLabel: 'Other' }), row('Other 2', '$50.00', { sectionLabel: 'Other' })];
+    const lines = [...group, ...second];
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('$300.00') }).removed).toEqual([]);
+  });
+
+  it('does not group rows from another table or section', () => {
+    const lines = [group[0], { ...group[1], sectionLabel: 'Other' }, { ...group[2], tableNumber: 2 }];
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+  });
+
+  it('does not treat a single matching row as a breakdown', () => {
+    const lines = [row('Usage total', '$100.00'), row('Usage detail', '$100.00')];
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+  });
+
+  it('does not look for the breakdown above its total', () => {
+    const lines = [group[1], group[2], group[0]];
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+  });
+
+  it('never groups a credit, discount, or PO-pinned row', () => {
+    expect(removeBreakdownRows([group[0], group[1], row('Credit', '-$10.00'), group[2]], { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+    expect(removeBreakdownRows([group[0], group[1], { ...group[2], hasDiscount: true }], { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+    expect(removeBreakdownRows([group[0], group[1], { ...group[2], pinnedPurchaseOrderLineId: 'L1' }], { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+  });
+
+  describe('freight rows in the line table', () => {
+    it('leaves a trailing freight row out of the search when the lines already reconcile', () => {
+      const lines = [row('Site survey', '100.00'), row('Labor', '60.00'), row('Materials', '40.00'), row('Shipping', '100.00')];
+      const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('200.00'), amountDue: '300.00', freight: '100.00' });
+      expect(result.removed).toEqual([]);
+      expect(result.lines).toBe(lines);
+    });
+
+    it('leaves the rows when freight read from the line table is the header freight and no subtotal is printed', () => {
+      const lines = [row('Widget kit', '50.00'), row('Part A', '30.00'), row('Part B', '20.00'), row('Shipping', '50.00')];
+      expect(removeBreakdownRows(lines, { amountDue: '150.00', freight: '50.00' }).removed).toEqual([]);
+    });
+
+    it('does not count a freight row as a breakdown row of the total above it', () => {
+      const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Shipping', '40.00'), row('Setup', '40.00')];
+      expect(removeBreakdownRows(lines, { amountDue: '240.00', freight: '40.00' }).removed).toEqual([]);
+    });
+
+    it('ends a breakdown at a freight row printed between its rows', () => {
+      const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Shipping', '40.00'), row('Setup', '40.00')];
+      const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('100.00'), amountDue: '140.00', freight: '40.00' });
+
+      expect(result.removed).toEqual([]);
+      expect(result.lines).toBe(lines);
+    });
+
+    it('still removes a real breakdown and keeps the freight row in place', () => {
+      const lines = [row('Order total', '100.00'), row('Parts', '60.00'), row('Labor', '40.00'), row('Shipping', '25.00')];
+      const result = removeBreakdownRows(lines, { lineSubtotal: subtotal('$100.00'), amountDue: '$125.00', freight: '25.00' });
+
+      expect(result.lines.map(line => line.description)).toEqual(['Order total', 'Shipping']);
+      expect(result.removed.map(line => line.description)).toEqual(['Parts', 'Labor']);
+    });
+  });
+
+  it('keeps the parent even when open PO lines are passed, because the printed subtotal counts the charge once', () => {
+    const poLines = [{ description: 'Tier 1 usage' }, { description: 'Tier 2 usage' }] as any;
+    const result = removeBreakdownRows(group, { lineSubtotal: subtotal('$100.00'), poLines });
+
+    expect(result.lines.map(line => line.description)).toEqual(['Usage total']);
+    expect(result.removed.map(line => line.description)).toEqual(['Tier 1', 'Tier 2']);
+  });
+
+  it('leaves the rows when a deposit, payment, or balance is printed', () => {
+    expect(removeBreakdownRows(group, { lineSubtotal: subtotal('$100.00'), settlementPrinted: true }).removed).toEqual([]);
+  });
+
+  it('leaves the rows when a row has no readable amount or no description', () => {
+    expect(removeBreakdownRows([...group, row('Included item', 'Included')], { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+    expect(removeBreakdownRows([...group, row('', '$5.00')], { lineSubtotal: subtotal('$100.00') }).removed).toEqual([]);
+  });
+
+  it('ignores an unlabeled or unreadable subtotal and falls back to the amount due', () => {
+    const lines = [...group];
+    expect(removeBreakdownRows(lines, { lineSubtotal: { label: ' ', amount: '$100.00' }, amountDue: '$100.00' }).removed).toHaveLength(2);
+    expect(removeBreakdownRows(lines, { lineSubtotal: subtotal('n/a') }).removed).toEqual([]);
+  });
+});
+
+describe('applyPrintedTaxCharges judged from the printed subtotal', () => {
+  const row = (description: string, totalPrice: string) => ({ description, quantity: null, unitCost: null, totalPrice, hasDiscount: false });
+  // SUPIN-477266 shape: lines overshoot the printed subtotal, so the line total cannot say what tax is missing.
+  const sibling = {
+    amountDue: '$134,979.27',
+    lines: [row('Seats', '$194,364.00')],
+    tax: '$6,331.12',
+    taxLabel: 'TX STATE TAX - TEXAS (6.25% on $101,297.76)',
+    taxCleared: false,
+    lineSubtotal: { label: 'Subtotal', amount: '$126,622.20' },
+    charges: [{ label: 'TX CITY TAX - FRISCO (2% on $101,297.76)', amount: '$2,025.95' }],
+  };
+
+  it('adds the city tax when the printed subtotal, tax, and city tax equal the amount due', () => {
+    const applied = applyPrintedTaxCharges(sibling);
+
+    expect(applied.taxAmount).toBe('8357.07');
+    expect(applied.taxCleared).toBe(false);
+    expect(applied.message).toBe(
+      'Added "TX CITY TAX - FRISCO (2% on $101,297.76)" $2,025.95 to header Tax_Amount so the printed "Subtotal" $126,622.20, freight, and tax equal the amount due. The invoice lines did not match that subtotal and are checked separately.'
+    );
+    expect(applied.breakdown).toBe('"TX STATE TAX - TEXAS (6.25% on $101,297.76)" $6,331.12 + "TX CITY TAX - FRISCO (2% on $101,297.76)" $2,025.95');
+  });
+
+  it('adds state, county, and city tax rows together', () => {
+    const applied = applyPrintedTaxCharges({
+      ...sibling,
+      amountDue: '$1,100.00',
+      lines: [row('Service', '$2,000.00')],
+      lineSubtotal: { label: 'Subtotal', amount: '$1,000.00' },
+      tax: '$60.00',
+      charges: [{ label: 'County Tax', amount: '$25.00' }, { label: 'City Tax', amount: '$15.00' }],
+    });
+    expect(applied.taxAmount).toBe('100.00');
+  });
+
+  it('counts printed freight in the subtotal check', () => {
+    const applied = applyPrintedTaxCharges({ ...sibling, freight: '$100.00', amountDue: '$135,079.27' });
+    expect(applied.taxAmount).toBe('8357.07');
+  });
+
+  it.each([
+    ['no printed subtotal', { lineSubtotal: null }],
+    ['an unlabeled subtotal', { lineSubtotal: { label: '', amount: '$126,622.20' } }],
+    ['a subtotal that with the taxes is not the amount due', { lineSubtotal: { label: 'Subtotal', amount: '$126,000.00' } }],
+    ['a printed deposit, payment, or balance', { settlementPrinted: true }],
+    ['a withheld charge', { chargeWithheld: true }],
+    ['a tax row that restates the header tax', { charges: [{ label: 'TX STATE TAX - TEXAS (6.25% on $101,297.76)', amount: '$6,331.12' }] }],
+    ['a rate with no amount', { charges: [{ label: 'City Tax 2%', amount: '' }] }],
+    ['a row that is not tax', { charges: [{ label: 'Service Charge', amount: '$2,025.95' }] }],
+  ])('leaves tax alone with %s', (_name, overrides) => {
+    const applied = applyPrintedTaxCharges({ ...sibling, ...overrides });
+    expect(applied.taxAmount).toBe('$6,331.12');
+    expect(applied.message).toBeUndefined();
+  });
+
+  it('keeps the original wording when the lines themselves explain the gap', () => {
+    const applied = applyPrintedTaxCharges({
+      ...sibling,
+      amountDue: '$169.28',
+      lines: [row('Usage', '$158.79')],
+      tax: '$7.94',
+      taxLabel: 'TX STATE TAX - TEXAS',
+      lineSubtotal: { label: 'Total excluding tax', amount: '$158.79' },
+      charges: [supin477265CityTax],
+    });
+    expect(applied.taxAmount).toBe('10.49');
+    expect(applied.message).toBe('Added "TX CITY TAX - FRISCO (2% on $127.03)" $2.55 to header Tax_Amount so lines, freight, and tax equal the amount due.');
+  });
+});
+
+describe('reinterpretSinglePriceLinesForCharges with a tax-inclusive price and two printed tax rows', () => {
+  const row = { description: 'Hosting', quantity: 1, unitCost: '$169.28', totalPrice: '$169.28', hasDiscount: false };
+  const context = {
+    amountDue: '$169.28',
+    tax: '$7.94',
+    taxLabel: 'TX STATE TAX',
+    lineSubtotal: { label: 'Total excluding tax', amount: '$158.79' },
+    printedTaxCharges: [supin477265CityTax],
+    freightCleared: false,
+    taxCleared: false,
+    summaryChargesPlaceable: true,
+  };
+
+  it('sets the line to the printed subtotal when it plus both taxes is the amount due', () => {
+    const result = reinterpretSinglePriceLinesForCharges([row], context);
+    expect(result.lines[0].totalPrice).toBe('$158.79');
+    expect(result.note).toContain('and $10.49 of tax');
+  });
+
+  it('leaves the line alone when the two taxes do not close the gap', () => {
+    const result = reinterpretSinglePriceLinesForCharges([row], { ...context, printedTaxCharges: [{ label: 'City Tax', amount: '$1.00' }] });
+    expect(result.lines).toEqual([row]);
   });
 });

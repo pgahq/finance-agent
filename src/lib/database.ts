@@ -89,6 +89,34 @@ export const CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE = `
   );
 `;
 
+// Supplier invoice numbers the agent made up for invoices that print none, one row per source document in a
+// conversation. The assigned number is stable across re-triggers (same document hash, same number) and a sibling
+// invoice that generates the same number takes the supplier-plus-service-date number, then -2, -3 ... suffixes.
+export const CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE = `
+  CREATE TABLE IF NOT EXISTS conversation_generated_invoice_numbers (
+    conversation_id VARCHAR(255) NOT NULL,
+    supplier_wid VARCHAR(255) NOT NULL,
+    assigned_number VARCHAR(255) NOT NULL,
+    base_number VARCHAR(255) NOT NULL,
+    document_hash CHAR(64) NOT NULL,
+    amount_due VARCHAR(32),
+    contested BOOLEAN NOT NULL DEFAULT FALSE,
+    workday_invoice_wid VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (conversation_id, supplier_wid, assigned_number),
+    UNIQUE (conversation_id, supplier_wid, document_hash)
+  );
+`;
+
+export const ADD_CONVERSATION_GENERATED_INVOICE_NUMBERS_AMOUNT_DUE = `
+  ALTER TABLE conversation_generated_invoice_numbers ADD COLUMN IF NOT EXISTS amount_due VARCHAR(32);
+`;
+
+export const ADD_CONVERSATION_GENERATED_INVOICE_NUMBERS_CONTESTED = `
+  ALTER TABLE conversation_generated_invoice_numbers ADD COLUMN IF NOT EXISTS contested BOOLEAN NOT NULL DEFAULT FALSE;
+`;
+
 // Short-lived claim taken before any Workday create or update for a conversation invoice, so two
 // racing triggers cannot both write. A claim older than the processor timeout can be taken over.
 export const CREATE_CONVERSATION_INVOICE_CLAIMS_TABLE = `
@@ -326,6 +354,9 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       // Conversation invoice registry (create-invoice resend dedupe); its UNIQUE key is the lookup index
       await pool.query(CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE);
       await pool.query(CREATE_CONVERSATION_INVOICE_CLAIMS_TABLE);
+      await pool.query(CREATE_CONVERSATION_GENERATED_INVOICE_NUMBERS_TABLE);
+      await pool.query(ADD_CONVERSATION_GENERATED_INVOICE_NUMBERS_AMOUNT_DUE);
+      await pool.query(ADD_CONVERSATION_GENERATED_INVOICE_NUMBERS_CONTESTED);
       await pool.query(CREATE_INVOICE_CLUSTER_PLANS_TABLE);
 
       // Agent invoice scoring: snapshots of each agent write, per-invoice scores, and AP cancel labels

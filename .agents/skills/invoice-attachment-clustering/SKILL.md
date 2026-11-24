@@ -232,7 +232,15 @@ invoice number, and concurrent double-fires.
   invoice, so always create. The registry and claims key on the printed number
   (`result.extractedSuppliersInvoiceNumber`), never on a number generated for
   the Workday submit, so two unnumbered invoices from one supplier on the same
-  day never share a row.
+  day never share a row. Their generated numbers are reserved per conversation
+  and supplier in `conversation_generated_invoice_numbers`: the first cluster
+  takes supplier prefix plus invoice date, a sibling that generates the same
+  number takes supplier prefix plus date of service (the last one listed), and
+  then `-2`, `-3`. Clusters run in parallel, so the holder of the invoice-date
+  number re-checks just before building notes and moves to its own service-date
+  number if a sibling clashed with it (`settleGeneratedInvoiceNumber`, best
+  effort). A re-trigger of the same document (same SHA-256) reuses its number,
+  skipping the create when that invoice is still live in Workday.
 - Duplicate supplier invoice numbers: when Workday rejects a supplier invoice
   number already used for that supplier, the create stops and reports the
   original Workday validation message. It does not retry on the fallback

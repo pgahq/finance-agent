@@ -29,9 +29,13 @@ const ocrInvoiceLine = z.object({
   sectionLabel: printedText(extractedLine.sectionLabel),
 });
 
+// The contact person is not used by any matching or note logic, and dropping it keeps the structured-output
+// grammar under Anthropic's size limit now that the service date is also extracted.
+const { contactPerson: _contactPerson, ...printedSupplierFields } = enrichment.supplier.shape.extractedInformation.shape;
+
 export const InvoiceOcrSchema = z.object({
   printedSupplier: z.object({
-    ...printedTextShape(enrichment.supplier.shape.extractedInformation.shape),
+    ...printedTextShape(printedSupplierFields),
     remitToAddress: z.string().describe('The remit-to or payment address printed on the invoice when it differs from the supplier street address. Empty string if none is printed.'),
   }).describe('The supplier (vendor) exactly as printed on the invoice'),
   printedBillTo: z.object(printedTextShape(enrichment.companyVerification.shape.extractedInformation.shape))
@@ -74,6 +78,7 @@ export const InvoiceOcrSchema = z.object({
   extractedSupplierReferenceKind: printedText(enrichment.extractedSupplierReferenceKind),
   extractedCustomerId: printedText(enrichment.extractedCustomerId),
   extractedServicePeriod: printedText(enrichment.extractedServicePeriod),
+  extractedServiceDate: printedText(enrichment.extractedServiceDate),
   extractedPaymentTerms: z.string().describe('The payment terms as printed on the invoice (e.g. "Net 30", "Due on Receipt"). Empty string if none are printed.'),
   invoiceLineQuantityDisplayed: enrichment.invoiceLineQuantityDisplayed,
   extractedInvoiceLines: z.array(ocrInvoiceLine).describe(`${enrichment.extractedInvoiceLines.description ?? ''} Return an empty array instead of null.`),
@@ -270,7 +275,7 @@ For any text field that is not printed on the document, return an empty string; 
 ## Part 1: Supplier as printed
 
 Populate \`printedSupplier\` with the supplier (vendor) details printed on the invoice:
-- supplierName, street address, phone, email, tax ID or EIN, website, and contact person
+- supplierName, street address, phone, email, tax ID or EIN, website
 - remitToAddress when a separate remit-to or payment address is printed, starting with the payee company name exactly as printed (for example "SiteOne Landscape Supply, LLC, 24110 Network Place, Chicago, IL 60673-1241")
 - industry only when the document makes the business type clear
 - memo: a few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "office supplies"). No ending period, and do not name PGA, the venue, or the location the service is for. If not clear, or if it would only repeat the supplier name or an identifier, leave the memo empty. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.
@@ -414,6 +419,8 @@ Extract these identifiers independently when they appear on the invoice or in a 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 
 4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", "Week Ending", or From/To. Return the dates or period only, without the label in front of them (\`09/28/2026 - 10/11/2026\`, not \`Pay Date Range 09/28/2026 - 10/11/2026\`). Keep the document wording for the dates; do not invent dates.
+
+5. **Service date** (\`extractedServiceDate\`): the date of service, event, or delivery the invoice bills, as YYYY-MM-DD (11/13/26 is 2026-11-13). It is not part of the memo; code uses it only to name an invoice that prints no number when the invoice-date name is already taken by a sibling invoice. Take it from a "Date of Service", "Service Date", or "Event Date" label, or from the Date column of the line-item table (a one-row table with a date in its Date column is the usual case). When several service dates are listed (different dates on different line items, or a list of dates), return the LAST one listed in the document; for a date range, return its end date. Leave it empty when only the invoice, statement, due, or print date is printed (the date at the top of the page or beside "Invoice Date" is the invoice date, never the service date), when there is no per-line date and no service-date label, or when you cannot tell which date is the service date.
 
 ---
 
