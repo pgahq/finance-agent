@@ -73,7 +73,13 @@ describe('delivery rows with a supplier charge code', () => {
 
   it('accepts any two-to-four-letter code before a delivery row, and still keeps merchandise lookalikes as lines', () => {
     expect(splitFreightLines([row('AB - Delivery Fee', 1, '9.00', '$9.00')]).freightAmountFromLines).toBe(9);
-    expect(splitFreightLines([row('AB - Delivery Fee Schedule', 1, '9.00', '$9.00'), row('AB - Freight Container', 1, '9.00', '$9.00')]).freightLines).toEqual([]);
+    expect(splitFreightLines([
+      row('AB - Delivery Fee Schedule', 1, '9.00', '$9.00'),
+      row('AB - Freight Container', 1, '9.00', '$9.00'),
+      row('AB - Delivery Equipment', 1, '9.00', '$9.00'),
+      row('ABC - Freight Service Kit', 1, '9.00', '$9.00'),
+      row('ODC - Shipping Supplies', 1, '9.00', '$9.00'),
+    ]).freightLines).toEqual([]);
   });
 });
 
@@ -131,14 +137,29 @@ describe('freightFromRowsMessage', () => {
     expect(splitFreightLines([unleaded, delivery, hazmatDelivery, unpriced]).freightLines).toHaveLength(3);
     expect(freightFromRowsMessage([unleaded, delivery, hazmatDelivery, unpriced], { freight: '170', headerFreightRead: false })).toBe(
       'Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
-      + ' Also left out of the lines with no positive readable amount, so check them against the document: "QRS - Delivery Fee" ($0.00).'
+      + ' Also left out of the lines, with an amount that is zero, negative, or unreadable, so check them against the document: "QRS - Delivery Fee" ($0.00).'
     );
+  });
+
+  it('names an unreadable row even when only one freight row carries the charge', () => {
+    const unpriced = { description: 'QRS - Delivery Fee', descriptionCells: null, quantity: null, unitCost: null, totalPrice: null, hasDiscount: false } as ExtractedInvoiceLine;
+    expect(freightFromRowsMessage([unleaded, delivery, unpriced], { freight: '160', headerFreightRead: false })).toBe(
+      'Freight $160.00 is this freight row, which is not an invoice line: "ABC - Delivery Charge" ($160.00).'
+      + ' Also left out of the lines, with an amount that is zero, negative, or unreadable, so check them against the document: "QRS - Delivery Fee" ($0.00).'
+    );
+  });
+
+  it('shows a readable credit with its amount instead of calling it unreadable', () => {
+    const credit = { ...hazmatDelivery, description: 'XYZ - Delivery Fee', totalPrice: '-$10.00', unitCost: '-10.00' };
+    const message = freightFromRowsMessage([unleaded, delivery, hazmatDelivery, credit], { freight: '160', headerFreightRead: false });
+    expect(message).toContain('"XYZ - Delivery Fee" (-$10.00)');
+    expect(message).toContain('zero, negative, or unreadable');
   });
 
   it('reads a row priced only by quantity and unit cost, and says nothing for a credit that makes the sum another amount', () => {
     const byUnitCost = { ...delivery, totalPrice: null };
     expect(splitFreightLines([unleaded, byUnitCost, hazmatDelivery]).freightAmountFromLines).toBe(170);
-    const credit = { ...hazmatDelivery, description: 'XYZ - Delivery Fee Credit', totalPrice: '-$10.00', unitCost: '-10.00' };
+    const credit = { ...hazmatDelivery, description: 'XYZ - Delivery Fee', totalPrice: '-$10.00', unitCost: '-10.00' };
     expect(freightFromRowsMessage([unleaded, delivery, credit], { freight: '170', headerFreightRead: false })).toBeUndefined();
   });
 });

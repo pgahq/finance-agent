@@ -1131,9 +1131,9 @@ export function restoreClearedFreightFromRows(
 }
 
 /**
- * Header freight that was never printed as one amount but summed from several freight rows. The notes label a
- * header freight "from document", so AP needs to see which rows made up the number. A freight row with no
- * positive readable amount leaves the lines without adding to the sum, so it is named separately.
+ * Header freight that was never printed as one amount but taken from freight rows. The notes label a header
+ * freight "from document", so AP needs to see which rows made up the number. A freight row whose amount is zero,
+ * negative, or unreadable leaves the lines without adding a charge, so it is named separately.
  */
 export function freightFromRowsMessage(
   extractedLines: ExtractedInvoiceLine[],
@@ -1143,13 +1143,16 @@ export function freightFromRowsMessage(
   const { freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);
   const submitted = chargeAmount(charges.freight);
   if (freightAmountFromLines == null || submitted == null || toCents(submitted) !== toCents(freightAmountFromLines)) return undefined;
-  const summed = freightLines.filter(line => (signedChargeLineAmount(line) ?? 0) > 0);
-  if (summed.length < 2) return undefined;
-  const unsummed = freightLines.filter(line => !summed.includes(line));
-  const unsummedNote = unsummed.length
-    ? ` Also left out of the lines with no positive readable amount, so check them against the document: ${describeRemovedLines(unsummed)}.`
+  const charged = freightLines.filter(line => (signedChargeLineAmount(line) ?? 0) > 0);
+  const others = freightLines.filter(line => !charged.includes(line));
+  if (charged.length === 0 || (charged.length === 1 && others.length === 0)) return undefined;
+  const source = charged.length === 1
+    ? `Freight ${formatChargeDollars(submitted)} is this freight row, which is not an invoice line: ${describeRemovedLines(charged)}.`
+    : `Freight ${formatChargeDollars(submitted)} is the sum of these ${charged.length} freight rows, which are not invoice lines: ${describeRemovedLines(charged)}.`;
+  const othersNote = others.length
+    ? ` Also left out of the lines, with an amount that is zero, negative, or unreadable, so check them against the document: ${describeRemovedLines(others)}.`
     : '';
-  return `Freight ${formatChargeDollars(submitted)} is the sum of these ${summed.length} freight rows, which are not invoice lines: ${describeRemovedLines(summed)}.${unsummedNote}`;
+  return source + othersNote;
 }
 
 export function resolveHeaderChargeAmounts(options: {
