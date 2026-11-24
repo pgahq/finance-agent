@@ -384,6 +384,37 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('accepts a non-ASCII attachment name and keeps the real name in the S3 key and processor payload', async () => {
+    const name = 'Maple Ridge\u2019s Invoice \u{1F4C4}.pdf';
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      attachments: [{
+        name,
+        url: 'https://downloads.intercomcdn.com/invoice.pdf',
+        contentType: 'application/pdf',
+        emailContext: invoiceEmailContext,
+      }],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('invoice-content'));
+
+    const response = await handler(buildEvent());
+
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(mockPutBinaryToS3).toHaveBeenNthCalledWith(
+      1,
+      { bucketName: 'test-bucket' },
+      `new-invoices/fixed-request-id/1-${name}`,
+      Buffer.from('invoice-content'),
+      'application/pdf',
+      expect.objectContaining({ 'original-filename': name }),
+    );
+    const payload = JSON.parse((InvokeCommand as unknown as jest.Mock).mock.calls[0][0].Payload);
+    expect(payload.data[0]).toMatchObject({
+      s3Key: `new-invoices/fixed-request-id/1-${name}`,
+      fileName: name,
+    });
+  });
+
   it('uploads every PDF and invokes the processor with all attachment metadata', async () => {
     const response = await handler(buildEvent());
 

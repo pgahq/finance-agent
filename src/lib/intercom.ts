@@ -270,7 +270,7 @@ export function sanitizeFileName(fileName: string): string {
     .split('/')
     .filter(Boolean)
     .pop()
-    ?.replace(/\0/g, '')
+    ?.replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
     .trim() || 'attachment.pdf';
 
   const withoutTraversal = base.replace(/^\.+/, '') || 'attachment.pdf';
