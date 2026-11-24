@@ -66,6 +66,7 @@ import {
   removeFreeRows,
   removeZeroAmountLines,
   resolveInvoiceLineQuantityDisplayed,
+  freightFromRowsMessage,
   splitFreightLines,
   withComposedLineDescriptions,
   type EmailBudgetSplitOutcome,
@@ -495,8 +496,10 @@ async function processInvoice(
     const checkedReconciliation = submitsLines
       ? chargeReconciliation
       : extractedChargeReconciliation(extractedLines, extractedCharges);
+    const freightRowsMessage = submitsLines && !restoredFreight.message && !freightAsLines ? freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: Boolean(placedCharges.freightAmount?.trim()) }) : undefined;
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(freightRowsMessage ? [freightRowsMessage] : []),
       ...(payrollTaxCharges.message ? [payrollTaxCharges.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...(submitsLines

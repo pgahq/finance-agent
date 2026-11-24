@@ -1589,8 +1589,36 @@ describe('isFreightOrHandlingLine', () => {
     'Deliveries',
     'FRN52118A - Freight Charge - 42,000.00 Pounds',
     'B12345 Freight 1,200 lbs',
+    'ABC - Delivery Charge',
+    'abc - delivery charge',
+    'XYZ - Hazmat/Environmental Delivery Fee',
+    'Hazardous Delivery Fee',
+    'Environmental Delivery Fee',
+    'Hazmat Shipping Surcharge',
   ])('treats %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(true);
+  });
+
+  it.each([
+    'Hazmat Fee',
+    'Hazmat Surcharge',
+    'Environmental Fee',
+    'Environmental Surcharge',
+    'XYZ - Hazmat/Environmental Fee',
+    'Pickup Charge',
+    'Pick Up Charge',
+    'ABC - Pickup Charge',
+    'Return Charge',
+    'ABC - Delivery truck rental',
+    'ABC - Shipping Container',
+    'ABC123 - Delivery Charge',
+    'Delivery Tax',
+    'ABC - Delivery Tax',
+    'ABC - XYZ - Delivery Charge',
+    'ABCDE - Delivery Charge',
+    'A - Delivery Charge',
+  ])('does not treat %s as a freight/handling charge (code prefix and qualifier words need a freight word)', (description) => {
+    expect(isFreightOrHandlingLine(description)).toBe(false);
   });
 
   it.each([

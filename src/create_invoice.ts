@@ -104,6 +104,7 @@ import {
   removeFreeRows,
   removeZeroAmountLines,
   resolveInvoiceLineQuantityDisplayed,
+  freightFromRowsMessage,
   splitFreightLines,
   withComposedLineDescriptions,
   type FinalInvoiceLine,
@@ -1325,8 +1326,10 @@ async function processInvoiceCluster(
       { allowFreightAsLines: true, removeDuplicates: true }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
+    const freightRowsMessage = restoredFreight.message || freightAsLines ? undefined : freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: Boolean(placedCharges.freightAmount?.trim()) });
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(freightRowsMessage ? [freightRowsMessage] : []),
       ...(payrollTaxCharges.message ? [payrollTaxCharges.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...chargeReconciliationMessages(chargeReconciliation),
