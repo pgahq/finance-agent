@@ -830,6 +830,15 @@ describe('intercom', () => {
       expect(sanitizeFileName('\t\n')).toBe('attachment.pdf');
     });
 
+    it('cuts a long name at 200 code points without splitting an emoji', () => {
+      const name = `${'a'.repeat(199)}\u{1F4C4}tail.pdf`;
+      const result = sanitizeFileName(name);
+
+      expect(result).toBe(`${'a'.repeat(199)}\u{1F4C4}`);
+      expect(() => encodeURIComponent(result)).not.toThrow();
+      expect(sanitizeFileName('b'.repeat(250))).toHaveLength(200);
+    });
+
     it('keeps non-ASCII names intact', () => {
       expect(sanitizeFileName('Maple Ridge\u2019s Invoice.pdf')).toBe('Maple Ridge\u2019s Invoice.pdf');
       expect(sanitizeFileName('Caf\u00e9 \u8bf7\u6b3e\u5355 \u{1F4C4}.pdf')).toBe('Caf\u00e9 \u8bf7\u6b3e\u5355 \u{1F4C4}.pdf');
