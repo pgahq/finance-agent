@@ -29,9 +29,9 @@ const ocrInvoiceLine = z.object({
   sectionLabel: printedText(extractedLine.sectionLabel),
 });
 
-// The contact person is not used by any matching or note logic, and dropping it keeps the structured-output
-// grammar under Anthropic's size limit now that the service date is also extracted.
-const { contactPerson: _contactPerson, ...printedSupplierFields } = enrichment.supplier.shape.extractedInformation.shape;
+// The contact person and website are not used by any matching or note logic, and dropping them keeps the
+// structured-output grammar under Anthropic's size limit now that the service date and tax rate are also extracted.
+const { contactPerson: _contactPerson, website: _website, ...printedSupplierFields } = enrichment.supplier.shape.extractedInformation.shape;
 
 export const InvoiceOcrSchema = z.object({
   printedSupplier: z.object({
@@ -50,6 +50,7 @@ export const InvoiceOcrSchema = z.object({
   extractedFreightLabel: printedText(enrichment.extractedFreightLabel),
   extractedTaxAmount: printedText(enrichment.extractedTaxAmount),
   extractedTaxLabel: printedText(enrichment.extractedTaxLabel),
+  extractedTaxRate: printedText(enrichment.extractedTaxRate),
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00"). Never compute it from a rate.'),
@@ -275,7 +276,7 @@ For any text field that is not printed on the document, return an empty string; 
 ## Part 1: Supplier as printed
 
 Populate \`printedSupplier\` with the supplier (vendor) details printed on the invoice:
-- supplierName, street address, phone, email, tax ID or EIN, website
+- supplierName, street address, phone, email, tax ID or EIN
 - remitToAddress when a separate remit-to or payment address is printed, starting with the payee company name exactly as printed (for example "SiteOne Landscape Supply, LLC, 24110 Network Place, Chicago, IL 60673-1241")
 - industry only when the document makes the business type clear
 - memo: a few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "office supplies"). No ending period, and do not name PGA, the venue, or the location the service is for. If not clear, or if it would only repeat the supplier name or an identifier, leave the memo empty. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.
@@ -348,6 +349,8 @@ Read the invoice attachment and extract the tax amount. It may be labeled as "Ta
 CRITICAL: If the invoice shows a "Shipping and Handling" or similar row with no amount, and a separate "Sales Tax" row with an amount, do NOT put the sales tax amount in \`extractedFreightAmount\`. Put the sales tax amount in \`extractedTaxAmount\` with label "Sales Tax", and leave \`extractedFreightAmount\` null. For example, an invoice with Sub-Total $8,514.38, blank Shipping and Handling, Sales Tax $510.86, and Invoice Total $9,025.24 must return extractedFreightAmount null, extractedFreightLabel null, extractedTaxAmount "$510.86", extractedTaxLabel "Sales Tax".
 
 If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. The one exception is employer payroll tax: a "Taxes" row on an invoice that bills payroll cost (wages, 401K, benefits, medical, workers comp) is employer payroll tax and stays a line item (Part 5.6). If no tax amount could be found or if it is ambiguous, omit both \`extractedTaxAmount\` and \`extractedTaxLabel\`.
+
+Also populate \`extractedTaxRate\` with the sales or use tax rate the invoice prints, exactly as printed with its percent sign (for example "7.5%"), whether or not the tax amount is printed. This is the rate of the invoice's one sales tax (a row such as "TAX RATE 7.5%" or "Sales Tax (7.5%)"). Return an empty string when no sales or use tax rate is printed, when the invoice prints more than one tax rate (state, county, and city rates), or when the only rates printed belong to something else (a late fee, a service fee, a discount, a payroll or employer tax). Never compute a tax amount from the rate: \`extractedTaxAmount\` stays empty when only a rate is printed. For example, an invoice with Subtotal $200.00, "TAX RATE 5%", and Total $210.00 that prints no tax dollar amount must return extractedTaxAmount "", extractedTaxLabel "", and extractedTaxRate "5%".
 
 ---
 

@@ -115,6 +115,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedTaxLabel: z.string().nullable().describe('The exact label on the invoice for the tax amount (e.g. "Sales Tax", "VAT", "GST"). Null if no tax amount was found.'),
 
+  extractedTaxRate: z.string().nullable().optional().describe('The single sales or use tax rate the invoice prints, exactly as printed with its percent sign (e.g. "7.5%"). Null when no rate is printed, when more than one tax rate is printed, or when the only rates are for other charges. Never compute an amount from it.'),
+
   extractedOtherCharges: z.array(z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),

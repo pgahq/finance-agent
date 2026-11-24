@@ -386,6 +386,8 @@ export interface AppliedTaxCharges {
   message?: string;
   /** Tax note detail, for example `Sales Tax $28.26 + EnvChg $17.00`. */
   breakdown?: string;
+  /** The amount was computed from the printed rate, not read from a printed tax amount. */
+  computedFromRate?: boolean;
 }
 
 interface TaxCandidate {
@@ -532,6 +534,78 @@ export function applyPrintedTaxCharges(input: {
     applied,
     `Added {charges} to header Tax_Amount so the printed "${label}" ${formatChargeDollars(subtotalCents / 100)}, freight, and tax equal the amount due. The invoice lines did not match that subtotal and are checked separately.`
   );
+}
+
+// Cents of difference allowed between the tax the amount due implies and the printed rate applied to the pre-tax total.
+const RATE_TAX_TOLERANCE_CENTS = 2;
+const MAX_PRINTED_TAX_RATE_PERCENT = 30;
+
+// The one percentage in the text, or undefined when none or several are printed.
+function parsePrintedTaxRate(raw: string | null | undefined): number | undefined {
+  const matches = [...(raw ?? '').matchAll(/(\d{1,2}(?:\.\d{1,4})?)\s*%/g)];
+  if (matches.length !== 1) return undefined;
+  const rate = Number(matches[0][1]);
+  return rate > 0 && rate <= MAX_PRINTED_TAX_RATE_PERCENT ? rate : undefined;
+}
+
+/**
+ * An invoice that prints a sales tax rate but no tax dollar amount: the tax is what the amount due leaves after the
+ * pre-tax total (lines and header freight, after discounts), and it is accepted only when that pre-tax total times
+ * the printed rate matches it within RATE_TAX_TOLERANCE_CENTS. The pre-tax total is read two ways, with and without
+ * the priced rows in the totals block (a discount or fee printed only there); the tax is taken only when exactly one
+ * reading passes the rate check. Anything else leaves the tax as it was, so the amount check reports the gap.
+ * It never runs when a tax amount was read (including a printed zero or a cleared payroll tax), another tax row is
+ * printed, a deposit, payment, retainage, or balance is printed, or the invoice bills payroll cost, where header tax
+ * is not sales or use tax.
+ */
+export function deriveTaxFromPrintedRate(applied: AppliedTaxCharges, input: {
+  rate?: string | null;
+  amountDue?: string | null;
+  lines: ExtractedInvoiceLine[];
+  freight?: string;
+  summaryCharges?: PrintedSummaryCharge[] | null;
+  /** Printed tax-like rows beside the main tax; any one of them means more than one tax is printed. */
+  taxCharges?: PrintedCharge[] | null;
+  taxLabel?: string | null;
+  chargeWithheld?: boolean;
+  settlementPrinted?: boolean;
+  /** Payroll or employment tax was moved onto the lines, so the invoice bills payroll cost. */
+  payrollTaxPlaced?: boolean;
+  /** The full printed rows and PO lines, to tell a payroll recharge invoice. */
+  classificationLines?: PayrollTaxContext['lines'];
+  poLines?: PayrollTaxContext['poLines'];
+}): AppliedTaxCharges {
+  if (applied.taxCleared || (chargeAmount(applied.taxAmount) ?? 0) > 0) return applied;
+  if (input.chargeWithheld || input.settlementPrinted || input.payrollTaxPlaced) return applied;
+  const rate = parsePrintedTaxRate(input.rate);
+  const amountDue = chargeAmount(input.amountDue);
+  if (rate == null || amountDue == null || input.lines.length === 0) return applied;
+  if (isPayrollRechargeInvoice({ lines: input.classificationLines ?? input.lines, poLines: input.poLines })) return applied;
+  if (printedTaxCandidates({ charges: input.taxCharges, lines: input.lines, poLines: input.poLines, taxLabel: input.taxLabel, currentTaxCents: 0 }).length) return applied;
+
+  const { merchandiseLines } = splitFreightLines(input.lines);
+  const lineCents = merchandiseLines.map(line => toCents(signedChargeLineAmount(line) ?? 0));
+  const freightCents = toCents(chargeAmount(input.freight) ?? 0);
+  const linesAndFreightCents = lineCents.reduce((total, cents) => total + cents, 0) + freightCents;
+  const totalsRows = input.summaryCharges?.length
+    ? sumSignedCents(collectSummaryCandidates(input.summaryCharges, merchandiseLines, lineCents, freightCents, 0).candidates)
+    : 0;
+
+  const amountDueCents = toCents(amountDue);
+  const readings = [...new Set([linesAndFreightCents, linesAndFreightCents + totalsRows])]
+    .filter(pretaxCents => pretaxCents > 0 && amountDueCents > pretaxCents)
+    .filter(pretaxCents => Math.abs((pretaxCents * rate) / 100 - (amountDueCents - pretaxCents)) <= RATE_TAX_TOLERANCE_CENTS + 1e-9);
+  if (readings.length !== 1) return applied;
+
+  const taxCents = amountDueCents - readings[0];
+  const detail = `Sales tax ${formatChargeDollars(taxCents / 100)} computed from printed rate ${rate}% on ${formatChargeDollars(readings[0] / 100)} pre-tax subtotal`;
+  return {
+    taxAmount: (taxCents / 100).toFixed(2),
+    taxCleared: false,
+    message: `${detail}, so lines, freight, and tax equal the amount due.`,
+    breakdown: detail,
+    computedFromRate: true,
+  };
 }
 
 export interface RemovedBreakdownRows<T extends ExtractedInvoiceLine> {
