@@ -2679,6 +2679,43 @@ describe('enrich_invoice', () => {
         'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.'
       );
     });
+
+    it('books supplier-coded delivery rows as header freight when no freight was printed as one amount', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const invoiceLines = require('../lib/invoice_lines.js');
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedAmountDue: '$1,125.35',
+        extractedFreightAmount: null,
+        extractedFreightLabel: null,
+        extractedTaxAmount: '$14.10',
+        extractedTaxLabel: 'Sales Tax',
+        extractedInvoiceLines: [
+          { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+          { description: 'Diesel Fuel', quantity: 1, unitCost: '301.25', totalPrice: '$301.25', hasDiscount: false },
+          { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+          { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+        ],
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [
+          { lineOrder: 1, description: 'Unleaded Fuel', quantity: 1, unitCost: 640, extendedAmount: 640 },
+          { lineOrder: 2, description: 'Diesel Fuel', quantity: 1, unitCost: 301.25, extendedAmount: 301.25 },
+        ],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+        .toEqual(['Unleaded Fuel', 'Diesel Fuel']);
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({ extractedFreightAmount: '170', freightCleared: false }));
+      expect(params.buildNotes([])).toContain(
+        'Amount check: Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
+      );
+    });
   });
 
   it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {
