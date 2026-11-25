@@ -118,13 +118,13 @@ describe('enrichInvoiceFromAttachments event rule', () => {
     expect(formatEmailWorktagNotes(result)).toContain('Event: 2024 Lakeside Junior Skills Series (no Workday match found)');
   });
 
-  it('uses the invoice date year when the email names no year, and says when several events fit', async () => {
-    const withYear = await enrich(matching(event('Lakeside Jr Skills Series', 'wid-main-2025')), email('Event: Lakeside Jr Skills Series'), '2026-11-13');
-    expect(buildEmailWorktags(withYear)?.eventWid).toBe(MAIN_2026);
+  it('uses the invoice year only to break a tie when the email names no year, and keeps a pick that fits', async () => {
+    const noPick = await enrich(matching(event('Lakeside Jr Skills Series', null)), email('Event: Lakeside Jr Skills Series'), '2026-11-13');
+    expect(buildEmailWorktags(noPick)?.eventWid).toBe(MAIN_2026);
 
-    const noYear = await enrich(matching(event('Lakeside Jr Skills Series', 'wid-main-2025')), email('Event: Lakeside Jr Skills Series'), null);
-    expect(buildEmailWorktags(noYear)?.eventWid).toBeNull();
-    expect(formatEmailWorktagNotes(noYear)).toContain('Event: Lakeside Jr Skills Series (not applied; several events fit: 2025 Lakeside Junior Skills Series, 2026 Lakeside Junior Skills Series)');
+    const earlierYearPick = await enrich(matching(event('Lakeside Jr Skills Series', 'wid-main-2025')), email('Event: Lakeside Jr Skills Series'), '2026-01-05');
+    expect(buildEmailWorktags(earlierYearPick)?.eventWid).toBe('wid-main-2025');
+    expect(formatEmailWorktagNotes(earlierYearPick)).toContain('(resolved: 2025 Lakeside Junior Skills Series)');
   });
 
   it('checks an event on a budget split the same way', async () => {

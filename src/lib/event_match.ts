@@ -84,7 +84,11 @@ function wordToken(raw: string): string | null {
  * codes the cache uses; an email names a section only by writing one of them (as "26ZB" or as an uppercase
  * "ZB"), so ordinary words are never read as sections.
  */
-export function parseEventText(text: string, knownSectionCodes: ReadonlySet<string> = new Set()): ParsedEventText {
+export function parseEventText(
+  text: string,
+  knownSectionCodes: ReadonlySet<string> = new Set(),
+  options: { standaloneSection?: boolean } = {}
+): ParsedEventText {
   let year: number | null = null;
   let sectionCode: string | null = null;
   let body = text;
@@ -96,9 +100,8 @@ export function parseEventText(text: string, knownSectionCodes: ReadonlySet<stri
     body = text.slice(prefix.length);
   }
 
-  const raws = rawTokens(body);
-  const isSectionWord = (raw: string) => /^[A-Z]{2,5}$/.test(raw) && knownSectionCodes.has(raw);
-  const lastWordIndex = raws.length - 1 - [...raws].reverse().findIndex(raw => !isSectionWord(raw));
+  const raws = rawTokens(body.replace(/['’`](\d{2})(?!\d)/g, ' FY$1 '));
+  const isSectionWord = (raw: string) => options.standaloneSection !== false && /^[A-Z]{2,5}$/.test(raw) && knownSectionCodes.has(raw);
   const words: Array<{ raw: string; index: number }> = [];
   let twoDigit: { index: number; year: number } | null = null;
 
@@ -128,7 +131,7 @@ export function parseEventText(text: string, knownSectionCodes: ReadonlySet<stri
       sectionCode = raw;
       continue;
     }
-    if (/^\d{2}$/.test(raw) && (index === 0 || index === lastWordIndex)) {
+    if (/^\d{2}$/.test(raw) && index === 0) {
       const parsed = expandYear(raw);
       if (parsed != null) twoDigit = { index, year: parsed };
     }
@@ -210,13 +213,30 @@ export function rankEventCandidates<T extends EventCandidate>(
 ): EventRanking<T> {
   const usable = usableCandidates(candidates);
   const known = knownSectionCodesOf(usable.map((candidate) => candidate.name));
-  const parsedQuery = parseEventText(query, known);
+  const ranking = rankParsedQuery(parseEventText(query, known), usable, options);
+  if (ranking.querySectionCode && !ranking.recommended && ranking.ambiguous.length === 0) {
+    // An uppercase word that is also a section code ("26 MET Jr League") may be part of the event's name. When
+    // no section event fits it as a section, read it as a word; a code written with the year ("26MET") stays a section.
+    const asWord = parseEventText(query, known, { standaloneSection: false });
+    if (asWord.sectionCode == null) {
+      const retried = rankParsedQuery(asWord, usable, options);
+      if (retried.recommended || retried.ambiguous.length > 0) return retried;
+    }
+  }
+  return ranking;
+}
+
+function rankParsedQuery<T extends EventCandidate>(
+  parsedQuery: ParsedEventText,
+  usable: readonly T[],
+  options: { preferredYear?: number | null }
+): EventRanking<T> {
   const gate: Gate = { queryYear: parsedQuery.year, querySectionCode: parsedQuery.sectionCode };
   const wantedYear = parsedQuery.year ?? options.preferredYear ?? null;
   const queryTokens = new Set(parsedQuery.tokens);
 
   const entries = usable.flatMap((candidate) => {
-    const parsed = parseEventText(candidate.name, known);
+    const parsed = parseEventText(candidate.name);
     if (!passesGates(gate, parsed)) return [];
     const eventTokens = new Set(parsed.tokens);
     let tier: EventMatchTier | null = null;
@@ -285,7 +305,17 @@ export function resolveEventCoding<E extends EventCoding>(
   const text = event.extracted?.trim();
   if (!text) return event.workdayId ? { ...event, workdayId: null } : event;
 
-  const ranking = rankEventCandidates(text, events, options);
+  const usableEvents = usableCandidates(events);
+  const wordingOnly = rankEventCandidates(text, usableEvents);
+  if (wordingOnly.queryYear == null && event.workdayId) {
+    // The email names no year, so the invoice year is only a tie-breaker: it never replaces a pick that
+    // already fits the wording, which may be an event from the year before.
+    const best = wordingOnly.recommended ? [wordingOnly.recommended] : wordingOnly.ambiguous;
+    const kept = best.find((candidate) => candidate.workdayId === event.workdayId);
+    if (kept) return { ...event, name: kept.name };
+  }
+
+  const ranking = rankEventCandidates(text, usableEvents, options);
   if (ranking.recommended) {
     return { ...event, workdayId: ranking.recommended.workdayId, name: ranking.recommended.name };
   }
@@ -294,15 +324,20 @@ export function resolveEventCoding<E extends EventCoding>(
   }
   if (!event.workdayId) return event;
 
-  const usable = usableCandidates(events);
-  const chosen = usable.find((candidate) => candidate.workdayId === event.workdayId);
-  return chosen && isCompatible(text, chosen, usable)
+  const chosen = usableEvents.find((candidate) => candidate.workdayId === event.workdayId);
+  return chosen && isCompatible(text, chosen, usableEvents)
     ? { ...event, name: chosen.name }
     : { ...event, workdayId: null };
 }
 
 function isCompatible(query: string, chosen: EventCandidate, events: readonly EventCandidate[]): boolean {
   const known = knownSectionCodesOf(events.map((candidate) => candidate.name));
-  const parsedQuery = parseEventText(query, known);
-  return passesGates({ queryYear: parsedQuery.year, querySectionCode: parsedQuery.sectionCode }, parseEventText(chosen.name, known));
+  const parsedChosen = parseEventText(chosen.name);
+  const asSection = parseEventText(query, known);
+  if (passesGates({ queryYear: asSection.year, querySectionCode: asSection.sectionCode }, parsedChosen)) return true;
+  // The section code the email wrote may be a word of the chosen main event's name ("26 MET Jr League").
+  const asWord = parseEventText(query, known, { standaloneSection: false });
+  return asSection.sectionCode != null
+    && parsedChosen.tokens.includes(asSection.sectionCode.toLowerCase())
+    && passesGates({ queryYear: asWord.year, querySectionCode: asWord.sectionCode }, parsedChosen);
 }

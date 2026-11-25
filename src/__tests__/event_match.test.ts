@@ -70,7 +70,7 @@ describe('rankEventCandidates', () => {
 
   it('matches a section copy only when the email names that section', () => {
     expect(rankEventCandidates('26ZB Lakeside Jr. Skills Series', CATALOG).recommended?.workdayId).toBe(ZB_26.workdayId);
-    expect(rankEventCandidates('Lakeside Jr. Skills Series 26 ZB', CATALOG).recommended?.workdayId).toBe(ZB_26.workdayId);
+    expect(rankEventCandidates('Lakeside Jr. Skills Series 26ZB', CATALOG).recommended?.workdayId).toBe(ZB_26.workdayId);
   });
 
   it('never matches a section copy of another section or year', () => {
@@ -196,13 +196,30 @@ describe('rankEventCandidates', () => {
     expect(parsed.tokens).toContain('zb');
   });
 
+  it('reads a section code from a cached name only in its year prefix, never from a word in a main event name', () => {
+    const cache = [{ workdayId: 'wid-met-main', name: '2026 MET Junior League' }, { workdayId: 'wid-met-section', name: '26MET-Section_Meeting' }];
+
+    expect(rankEventCandidates('26 met jr league', cache).recommended?.workdayId).toBe('wid-met-main');
+    expect(rankEventCandidates('26 MET Jr League', cache).recommended?.workdayId).toBe('wid-met-main');
+    expect(resolveEventCoding(coding('26 met jr league', 'wid-met-main'), cache)).toMatchObject({ workdayId: 'wid-met-main' });
+  });
+
+  it('reads a bare two-digit year only at the start, so a number ending the name stays part of it', () => {
+    const cache = [{ workdayId: 'wid-top', name: '2026 Junior Tour Top 25' }, { workdayId: 'wid-under', name: '2026 Harbor Under 30' }];
+
+    expect(rankEventCandidates('Junior Tour Top 25', cache).recommended?.workdayId).toBe('wid-top');
+    expect(rankEventCandidates('26 Harbor Under 30', cache).recommended?.workdayId).toBe('wid-under');
+    expect(parseEventText('Harbor Under 30')).toMatchObject({ year: null, tokens: ['harbor', 'under', '30'] });
+  });
+
   it('returns nothing for an empty query', () => {
     expect(rankEventCandidates('26', CATALOG).ranked).toEqual([]);
   });
 });
 
+const coding = (extracted: string | null, workdayId: string | null) => ({ extracted, workdayId });
+
 describe('resolveEventCoding', () => {
-  const coding = (extracted: string | null, workdayId: string | null) => ({ extracted, workdayId });
 
   it('replaces the section event the model picked with the main event and records its name', () => {
     expect(resolveEventCoding(coding('26 Lakeside Jr. Skills Series', ZB_26.workdayId), CATALOG)).toEqual({
@@ -217,7 +234,7 @@ describe('resolveEventCoding', () => {
   });
 
   it('clears a tie and lists the events that fit', () => {
-    const result = resolveEventCoding(coding('Lakeside Jr Skills Series', MAIN_2025.workdayId), CATALOG);
+    const result = resolveEventCoding(coding('Lakeside Jr Skills Series', null), CATALOG);
 
     expect(result).toEqual({
       extracted: 'Lakeside Jr Skills Series',
@@ -235,6 +252,16 @@ describe('resolveEventCoding', () => {
     });
     expect(resolveEventCoding(coding('Quarterly Gala', ZB_26.workdayId), CATALOG)).toMatchObject({ workdayId: null });
     expect(resolveEventCoding(coding('Quarterly Gala', 'wid-not-cached'), CATALOG)).toMatchObject({ workdayId: null });
+  });
+
+  it('keeps a model pick that fits the wording when the email names no year, and uses the preferred year only for a tie with no pick', () => {
+    const options = { preferredYear: 2026 };
+
+    expect(resolveEventCoding(coding('Lakeside Jr Skills Series', MAIN_2025.workdayId), CATALOG, options)).toEqual({
+      extracted: 'Lakeside Jr Skills Series', workdayId: MAIN_2025.workdayId, name: MAIN_2025.name,
+    });
+    expect(resolveEventCoding(coding('Lakeside Jr Skills Series', null), CATALOG, options)).toMatchObject({ workdayId: MAIN_2026.workdayId });
+    expect(resolveEventCoding(coding('Lakeside Jr Skills Series', HARBOR.workdayId), CATALOG, options)).toMatchObject({ workdayId: MAIN_2026.workdayId });
   });
 
   it('leaves an unresolved event and an absent event alone', () => {
