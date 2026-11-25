@@ -2327,6 +2327,79 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('printed tax rate with no printed tax amount (fictional)', () => {
+    const { supin477515Header, supin477515Rows, supin477515Tax, supin477515Detail } = require('./fixtures/supin_477515.js');
+    const finalLines = {
+      lines: [
+        { lineOrder: 1, description: 'Assorted frozen pops with toppings', quantity: 120, unitCost: 3.5, extendedAmount: 420 },
+        { lineOrder: 2, description: 'Setup and serving fees', quantity: 1, unitCost: 140, extendedAmount: 140 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    };
+
+    it('books the tax from the printed rate as header Tax_Amount, with a note and no amount mismatch', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin477515Header,
+        extractedInvoiceLines: supin477515Rows,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(finalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-rate-tax/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe(supin477515Tax);
+      expect(submitArgs.taxCleared).toBe(false);
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([420, 140]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(`Tax Amount (computed from printed rate): ${supin477515Tax} (${supin477515Detail})`);
+      expect(notes).toContain(`Amount check: ${supin477515Detail}, so lines, freight, and tax equal the amount due.`);
+      expect(notes).not.toContain('Tax Amount (from document)');
+      expect(notes).not.toContain('but the amount due is');
+      expect(notes).not.toContain('Line total review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.amountMismatch).toBeUndefined();
+      expect(slackDetails.extracted.taxAmount).toBe(supin477515Tax);
+      expect(slackDetails.extracted.taxComputedFromRate).toBe(true);
+    });
+
+    it('keeps the amount mismatch when the printed rate does not explain the gap', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin477515Header,
+        extractedTaxRate: '6%',
+        extractedInvoiceLines: supin477515Rows,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(finalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-rate-mismatch/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.buildNotes([])).not.toContain('computed from printed rate');
+    });
+
+    it('keeps a printed tax amount over the rate', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin477515Header,
+        extractedTaxAmount: '$44.13',
+        extractedTaxLabel: 'Sales Tax',
+        extractedInvoiceLines: supin477515Rows,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(finalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-rate-printed/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('$44.13');
+      expect(submitArgs.buildNotes([])).toContain('Tax Amount (from document): $44.13');
+    });
+  });
+
   describe('payroll recharge invoice (fictional)', () => {
     const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
     const mergeAsExtracted = (lines: Array<{ description: string; totalPrice: string | null }>) => Promise.resolve({
@@ -2727,6 +2800,77 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).toContain(
       'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.'
     );
+  });
+
+  it('books supplier-coded delivery rows as header freight when no freight was printed as one amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$1,125.35',
+      extractedFreightAmount: null,
+      extractedFreightLabel: null,
+      extractedTaxAmount: '$14.10',
+      extractedTaxLabel: 'Sales Tax',
+      extractedInvoiceLines: [
+        { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+        { description: 'Diesel Fuel', quantity: 1, unitCost: '301.25', totalPrice: '$301.25', hasDiscount: false },
+        { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+        { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Unleaded Fuel', quantity: 1, unitCost: 640 },
+        { lineOrder: 2, description: 'Diesel Fuel', quantity: 1, unitCost: 301.25 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-coded-delivery-rows/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((line: any) => line.description)).toEqual(['Unleaded Fuel', 'Diesel Fuel']);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('170');
+    expect(submitArgs.extractedTaxAmount).toBe('$14.10');
+    expect(submitArgs.freightAsLines).toBeFalsy();
+    expect(submitArgs.buildNotes([])).toContain(
+      'Amount check: Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
+    );
+  });
+
+  it('still names the delivery rows when the freight header read was moved out to tax', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$1,125.35',
+      extractedFreightAmount: '$14.10',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: null,
+      extractedTaxLabel: null,
+      extractedInvoiceLines: [
+        { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+        { description: 'Diesel Fuel', quantity: 1, unitCost: '301.25', totalPrice: '$301.25', hasDiscount: false },
+        { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+        { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Unleaded Fuel', quantity: 1, unitCost: 640 },
+        { lineOrder: 2, description: 'Diesel Fuel', quantity: 1, unitCost: 301.25 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-coded-delivery-rows-tax-moved/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('170');
+    expect(submitArgs.buildNotes([])).toContain('Amount check: Freight $170.00 is the sum of these 2 freight rows');
   });
 
   it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
@@ -3693,6 +3837,26 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('Added "PROPERTY TAX SURCHARGE');
       expect(notes).not.toContain('Amount check');
       expect(notes).not.toContain('may be a row that was not read');
+    });
+
+    it('keeps a supplier-coded delivery row on its PO service line and sends the coded hazmat delivery fee to header freight', async () => {
+      const { workday, invoiceLines } = await run(
+        { ...supin472110Header, extractedAmountDue: '$816.00', extractedTaxAmount: '$6.00', extractedLineSubtotal: null },
+        [
+          { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+          { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+          { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+        ]
+      );
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((line: any) => line.description)).toEqual(['Unleaded Fuel', 'ABC - Delivery Charge']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.find((line: any) => line.description === 'ABC - Delivery Charge')).toMatchObject({ purchaseOrderLineId: DELIVERY_LINE, extendedAmount: 160 });
+      expect(submitArgs.finalLines).toHaveLength(2);
+      expect(submitArgs.extractedFreightAmount).toBe('10');
+      expect(submitArgs.freightAsLines).toBeFalsy();
+      expect(submitArgs.extractedTaxAmount).toBe('$6.00');
+      expect(submitArgs.buildNotes([])).not.toContain('is the sum of these');
     });
   });
 

@@ -318,6 +318,9 @@ const FREIGHT_ALLOWED_WORDS = new Set([
   'ground', 'overnight', 'express',
   'standard', 'priority', 'next', 'day', 'free', 'in', 'out',
   'air', 'ocean', 'parcel', 'home', 'local', 'rush', 'misc', 'surcharge',
+  // Hazmat and environmental fees are freight only beside a freight word (`Hazmat/Environmental Delivery Fee`);
+  // the anchor check keeps a bare `Hazmat Fee` or `Environmental Surcharge` a line.
+  'hazmat', 'hazardous', 'environmental',
 ]);
 
 const FREIGHT_WEIGHT_WORDS = new Set(['pound', 'pounds', 'lb', 'lbs', 'kg', 'kgs']);
@@ -348,8 +351,11 @@ function normalizeLineDescription(description: string): string {
     .trim();
 }
 
-export function isFreightOrHandlingLine(description: string | null | undefined): boolean {
-  if (!description) return false;
+// A supplier's own charge code in front of a delivery row (`ODC - Delivery Charge`): two to four letters and a
+// spaced dash. A code with digits (`SKU123`) names an item, so it is never stripped.
+const SUPPLIER_CHARGE_CODE_PREFIX = /^\s*[A-Za-z]{2,4}\s+[-\u2013\u2014]\s+/;
+
+function isFreightOrHandlingText(description: string): boolean {
   const normalized = normalizeLineDescription(description);
   if (!normalized) return false;
   if (normalized === 's and h') return true;
@@ -360,6 +366,15 @@ export function isFreightOrHandlingLine(description: string | null | undefined):
   const body = printsWeight && tokens.length > 1 && isShipmentReferenceToken(tokens[0]) ? tokens.slice(1) : tokens;
   return body.some(isFreightAnchorToken)
     && body.every(token => isAllowedFreightToken(token) || FREIGHT_WEIGHT_WORDS.has(token));
+}
+
+export function isFreightOrHandlingLine(description: string | null | undefined): boolean {
+  if (!description) return false;
+  if (isFreightOrHandlingText(description)) return true;
+  const code = description.match(SUPPLIER_CHARGE_CODE_PREFIX)?.[0];
+  // A tax word in front of the row (`Tax - Delivery Charge`) is a tax label, which the tax handling must see.
+  if (!code || TAX_LINE_CORE_WORDS.has(code.replace(/[^A-Za-z]/g, '').toLowerCase())) return false;
+  return isFreightOrHandlingText(description.replace(SUPPLIER_CHARGE_CODE_PREFIX, ''));
 }
 
 function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
@@ -920,6 +935,8 @@ export interface NormalizedFreightAndTax {
   reviewNote?: string;
   // A read amount was not submitted, so the header keeps whatever Workday already has.
   chargeWithheld?: boolean;
+  // The freight amount is the sum of freight rows, not an amount the document printed as freight.
+  freightFromRows?: boolean;
 }
 
 function sameAmount(a: string | undefined, b: string | undefined): boolean {
@@ -1117,6 +1134,31 @@ export function restoreClearedFreightFromRows(
   };
 }
 
+/**
+ * Header freight that was never printed as one amount but taken from freight rows. The notes label a header
+ * freight "from document", so AP needs to see which rows made up the number. A freight row whose amount is zero,
+ * negative, or unreadable leaves the lines without adding a charge, so it is named separately.
+ */
+export function freightFromRowsMessage(
+  extractedLines: ExtractedInvoiceLine[],
+  charges: { freight?: string; headerFreightRead: boolean }
+): string | undefined {
+  if (charges.headerFreightRead) return undefined;
+  const { freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);
+  const submitted = chargeAmount(charges.freight);
+  if (freightAmountFromLines == null || submitted == null || toCents(submitted) !== toCents(freightAmountFromLines)) return undefined;
+  const charged = freightLines.filter(line => (signedChargeLineAmount(line) ?? 0) > 0);
+  const others = freightLines.filter(line => !charged.includes(line));
+  if (charged.length === 0 || (charged.length === 1 && others.length === 0)) return undefined;
+  const source = charged.length === 1
+    ? `Freight ${formatChargeDollars(submitted)} is this freight row, which is not an invoice line: ${describeRemovedLines(charged)}.`
+    : `Freight ${formatChargeDollars(submitted)} is the sum of these ${charged.length} freight rows, which are not invoice lines: ${describeRemovedLines(charged)}.`;
+  const othersNote = others.length
+    ? ` Also left out of the lines, with an amount that is zero, negative, or unreadable, so check them against the document: ${describeRemovedLines(others)}.`
+    : '';
+  return source + othersNote;
+}
+
 export function resolveHeaderChargeAmounts(options: {
   extractedFreightAmount?: string | null;
   extractedFreightLabel?: string | null;
@@ -1133,13 +1175,16 @@ export function resolveHeaderChargeAmounts(options: {
       ...normalized,
       extractedFreightAmount: freightFromLines,
       freightCleared: false,
+      freightFromRows: true,
       extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
     };
   }
   // Line-derived freight only fills a header with no amount read; a withheld header amount keeps the existing value.
   const lineFreight = !options.extractedFreightAmount?.trim() ? freightFromLines : undefined;
+  const freightFromRows = !normalized.freightCleared && normalized.extractedFreightAmount == null && lineFreight != null;
   return {
     ...normalized,
+    ...(freightFromRows ? { freightFromRows } : {}),
     extractedFreightAmount: normalized.freightCleared ? undefined : (normalized.extractedFreightAmount ?? lineFreight),
     extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
   };

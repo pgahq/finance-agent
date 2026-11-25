@@ -20,6 +20,16 @@ describe('composeInvoiceLineDescription', () => {
     )).toBe('Ryan Poland - Project Management');
   });
 
+  it('joins a short code cell in front of a delivery cell into a freight description, but never a tax word', () => {
+    const amounts = { quantity: 1, unitCost: '45.00', totalPrice: '45.00' };
+    const coded = composeInvoiceLineDescription(['ODC', 'Delivery Charge', '1', '45.00', '45.00'], 'Delivery Charge', amounts);
+    expect(coded).toBe('ODC - Delivery Charge');
+    expect(splitFreightLines([{ description: coded, totalPrice: '45.00' }]).freightLines).toHaveLength(1);
+    const taxed = composeInvoiceLineDescription(['Tax', 'Delivery Charge', '1', '45.00', '45.00'], 'Delivery Charge', amounts);
+    expect(taxed).toBe('Tax - Delivery Charge');
+    expect(splitFreightLines([{ description: taxed, totalPrice: '45.00' }]).freightLines).toHaveLength(0);
+  });
+
   it('does not let a longer model summary win over descriptionCells', () => {
     expect(composeInvoiceLineDescription(
       ['Ryan Poland', 'Project Management'],

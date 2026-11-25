@@ -270,11 +270,11 @@ export function sanitizeFileName(fileName: string): string {
     .split('/')
     .filter(Boolean)
     .pop()
-    ?.replace(/\0/g, '')
+    ?.replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
     .trim() || 'attachment.pdf';
 
   const withoutTraversal = base.replace(/^\.+/, '') || 'attachment.pdf';
-  return withoutTraversal.slice(0, 200);
+  return Array.from(withoutTraversal).slice(0, 200).join('');
 }
 
 const INTERCOM_CDN_HOST_PATTERN = /^(?:[a-z0-9-]+\.)*intercomcdn\.com$/i;

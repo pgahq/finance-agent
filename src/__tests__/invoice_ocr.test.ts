@@ -13,6 +13,7 @@ import { supin472322Header, supin472322MissedRows, supin472322ProductionRows, su
 import { supin472108DeliveryRow, supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin474922Header, supin474922Rows } from './fixtures/supin_474922.js';
 import { payrollRechargeHeader, payrollRechargeRows, payrollRechargeSiblingRows } from './fixtures/payroll_recharge.js';
+import { supin477515Rows } from './fixtures/supin_477515.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn(), warn: jest.fn() }));
 
@@ -57,7 +58,6 @@ const ocrResult: InvoiceOcrResult = {
     phone: null,
     email: 'kristysawyer@sawyerprivacyconsultants.com',
     taxId: '12-3456789',
-    website: null,
     industry: 'Privacy consulting',
     memo: 'Privacy consulting services for the week of Sept 28',
   },
@@ -77,6 +77,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedFreightLabel: null,
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
+  extractedTaxRate: '8.25%',
   extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
   extractedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }, { label: 'Discount 10%', amount: null }],
   extractedLineSubtotal: null,
@@ -114,7 +115,6 @@ const ocrResponse: InvoiceOcrResponse = {
     phone: '',
     email: 'kristysawyer@sawyerprivacyconsultants.com',
     taxId: '12-3456789',
-    website: '',
     industry: 'Privacy consulting',
     memo: 'Privacy consulting services for the week of Sept 28',
   },
@@ -134,6 +134,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedFreightLabel: '',
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
+  extractedTaxRate: '8.25%',
   extractedOtherCharges: [{ label: ' EnvChg Tax ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
   extractedSummaryCharges: [{ label: ' Decoration ', amount: ' $5.00 ' }, { label: '', amount: '$2.00' }, { label: 'Discount 10%', amount: '' }],
   extractedLineSubtotal: { label: '', amount: '' },
@@ -1337,6 +1338,57 @@ describe('invoice OCR pass', () => {
       expect(invoiceOcrPrompt).toContain('an invoice that prints only "$8,573.40" returns an empty string');
       expect(invoiceOcrPrompt).toContain('"¥" can be yen or yuan');
       expect(invoiceOcrPrompt).toContain('Never convert an amount between currencies');
+    });
+  });
+
+  describe('printed tax rate', () => {
+    const rateInvoice = (overrides: Partial<typeof ocrResponse> = {}) => ({
+      ...ocrResponse,
+      extractedAmountDue: '$604.13',
+      extractedFreightAmount: '',
+      extractedFreightLabel: '',
+      extractedTaxAmount: '',
+      extractedTaxLabel: '',
+      extractedTaxRate: '7.88%',
+      extractedOtherCharges: [],
+      extractedSummaryCharges: [],
+      extractedPartialPayment: { label: '', percent: '', amount: '' },
+      extractedPriorPayments: [],
+      extractedLineSubtotal: { label: 'SUBTOTAL', amount: '$560.00' },
+      extractedInvoiceLines: supin477515Rows.map(row => ({ ...row, descriptionCells: [], unitCost: row.unitCost, sectionLabel: '' })),
+      ...overrides,
+    });
+
+    it('returns the printed rate and leaves the tax amount empty when only a rate is printed', () => {
+      const normalized = normalizeInvoiceOcrResult(rateInvoice());
+
+      expect(normalized.extractedTaxRate).toBe('7.88%');
+      expect(normalized.extractedTaxAmount).toBeNull();
+      expect(normalizeInvoiceOcrResult(rateInvoice({ extractedTaxRate: '' })).extractedTaxRate).toBeNull();
+    });
+
+    it('asks the model for one sales or use tax rate and never an amount computed from it', () => {
+      expect(invoiceOcrPrompt).toContain('`extractedTaxRate`');
+      expect(invoiceOcrPrompt).toContain('when the invoice prints more than one tax rate');
+      expect(invoiceOcrPrompt).toContain('Never compute a tax amount from the rate');
+      expect(invoiceOcrPrompt).toContain('"TAX RATE 5%"');
+    });
+
+    it('does not read the document again when the printed rate explains the gap to the amount due', async () => {
+      mockGetAiResponse.mockResolvedValue(rateInvoice());
+
+      const result = await extractInvoiceDocuments([pdf]);
+
+      expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      expect(result?.extractedTaxRate).toBe('7.88%');
+    });
+
+    it('still reads again when the printed rate does not explain the gap', async () => {
+      mockGetAiResponse.mockResolvedValue(rateInvoice({ extractedTaxRate: '6%' }));
+
+      await extractInvoiceDocuments([pdf]);
+
+      expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
     });
   });
 

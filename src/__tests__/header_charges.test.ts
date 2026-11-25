@@ -1,8 +1,9 @@
-import { applyPrintedTaxCharges, hasPrintedSettlement, isPayrollRechargeInvoice, isPayrollTaxCharge, isTaxLikeChargeLabel, placePayrollTaxCharges, removeBreakdownRows, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
+import { applyPrintedTaxCharges, deriveTaxFromPrintedRate, hasPrintedSettlement, isPayrollRechargeInvoice, isPayrollTaxCharge, isTaxLikeChargeLabel, placePayrollTaxCharges, removeBreakdownRows, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
 import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooHeader } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { payrollRechargeHeader, payrollRechargePoLine, payrollRechargeRows, payrollRechargeSiblingRows, payrollTaxesCharge } from './fixtures/payroll_recharge.js';
 import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges, removeFreeRows, type FinalInvoiceLine } from '../lib/invoice_lines.js';
+import { supin477515Detail, supin477515Header, supin477515Rows, supin477515Tax } from './fixtures/supin_477515.js';
 import { supin477265CityTax, supin477265FlatFeeDescriptions, supin477265Header, supin477265Rows } from './fixtures/supin_477265.js';
 
 // SUPIN-467011: two lines, Sales Tax $28.26, a printed EnvChg tax row of $17.00, amount due $387.76.
@@ -1467,5 +1468,148 @@ describe('reinterpretSinglePriceLinesForCharges with a tax-inclusive price and t
   it('leaves the line alone when the two taxes do not close the gap', () => {
     const result = reinterpretSinglePriceLinesForCharges([row], { ...context, printedTaxCharges: [{ label: 'City Tax', amount: '$1.00' }] });
     expect(result.lines).toEqual([row]);
+  });
+});
+
+describe('deriveTaxFromPrintedRate', () => {
+  const none: { taxAmount?: string; taxCleared: boolean } = { taxAmount: undefined, taxCleared: false };
+  const row = (totalPrice: string, description = 'Catering') => ({ description, quantity: null, unitCost: null, totalPrice, hasDiscount: null });
+  // A $100.00 line at 5% with the amount due that adds $5.00 of tax.
+  const simple = { rate: '5%', amountDue: '$105.00', lines: [row('100.00')] };
+  const derive = (overrides: Partial<Parameters<typeof deriveTaxFromPrintedRate>[1]> = {}, applied = none) =>
+    deriveTaxFromPrintedRate(applied, { ...simple, ...overrides });
+
+  it('books the tax the amount due leaves after the lines, within a cent or two of the printed rate', () => {
+    const derived = deriveTaxFromPrintedRate(none, {
+      rate: supin477515Header.extractedTaxRate,
+      amountDue: supin477515Header.extractedAmountDue,
+      lines: supin477515Rows,
+      summaryCharges: supin477515Header.extractedSummaryCharges,
+    });
+
+    expect(derived).toEqual({
+      taxAmount: supin477515Tax,
+      taxCleared: false,
+      message: `${supin477515Detail}, so lines, freight, and tax equal the amount due.`,
+      breakdown: supin477515Detail,
+      computedFromRate: true,
+    });
+    const reconciled = reconcileSubmittedCharges(supin477515Rows, { amountDue: supin477515Header.extractedAmountDue, tax: derived.taxAmount });
+    expect(reconciled.unreconciled).toBeUndefined();
+  });
+
+  it('leaves the amount check to report the gap when the rate does not explain it', () => {
+    const wrongRate = deriveTaxFromPrintedRate(none, {
+      rate: '7.5%',
+      amountDue: supin477515Header.extractedAmountDue,
+      lines: supin477515Rows,
+    });
+    const roundedRate = deriveTaxFromPrintedRate(none, {
+      rate: '7.875%',
+      amountDue: supin477515Header.extractedAmountDue,
+      lines: supin477515Rows,
+    });
+
+    expect(wrongRate).toEqual(none);
+    expect(roundedRate).toEqual(none);
+  });
+
+  it('accepts a difference of two cents and rejects three', () => {
+    expect(derive({ amountDue: '$105.02' }).taxAmount).toBe('5.02');
+    expect(derive({ amountDue: '$104.98' }).taxAmount).toBe('4.98');
+    expect(derive({ amountDue: '$105.03' })).toEqual(none);
+    expect(derive({ amountDue: '$104.97' })).toEqual(none);
+  });
+
+  it('counts header freight in the pre-tax subtotal', () => {
+    const derived = derive({ lines: [row('100.00')], freight: '$20.00', amountDue: '$126.00' });
+
+    expect(derived.taxAmount).toBe('6.00');
+    expect(derived.breakdown).toBe('Sales tax $6.00 computed from printed rate 5% on $120.00 pre-tax subtotal');
+    expect(derive({ lines: [row('100.00')], freight: '$20.00', amountDue: '$125.00' })).toEqual(none);
+  });
+
+  it('counts a discount printed only in the totals block in the pre-tax subtotal', () => {
+    const derived = derive({
+      rate: '10%',
+      lines: [row('1000.00')],
+      amountDue: '$990.00',
+      summaryCharges: [{ label: 'Merchandise Discount', amount: '-$100.00' }],
+    });
+
+    expect(derived.taxAmount).toBe('90.00');
+    expect(derived.breakdown).toBe('Sales tax $90.00 computed from printed rate 10% on $900.00 pre-tax subtotal');
+  });
+
+  it('counts a fee printed only in the totals block in the pre-tax subtotal', () => {
+    const derived = derive({ lines: [row('100.00')], amountDue: '$126.00', summaryCharges: [{ label: 'Decoration', amount: '$20.00' }] });
+
+    expect(derived.taxAmount).toBe('6.00');
+  });
+
+  it('does nothing when both readings of the totals block would pass the rate check', () => {
+    const ambiguous = derive({
+      rate: '10%',
+      lines: [row('100.00')],
+      amountDue: '$110.00',
+      summaryCharges: [{ label: 'Decoration', amount: '$0.01' }],
+    });
+
+    expect(ambiguous).toEqual(none);
+  });
+
+  it('keeps a printed tax amount and never replaces it with the rate', () => {
+    const read = { taxAmount: '$4.00', taxCleared: false, message: 'Added "County Tax" $1.00 to header Tax_Amount so lines, freight, and tax equal the amount due.' };
+
+    expect(derive({}, read)).toBe(read);
+  });
+
+  it('does nothing after a printed zero or a cleared payroll tax', () => {
+    const cleared = { taxAmount: undefined, taxCleared: true };
+
+    expect(derive({}, cleared)).toBe(cleared);
+  });
+
+  it.each([
+    ['no rate', { rate: null }],
+    ['an empty rate', { rate: '' }],
+    ['a rate without a percent sign', { rate: '5' }],
+    ['a zero rate', { rate: '0%' }],
+    ['a rate above the sales tax range', { rate: '45%' }],
+    ['more than one rate', { rate: '5% state, 2% city' }],
+    ['no amount due', { amountDue: null }],
+    ['an amount due that is not above the lines', { amountDue: '$100.00' }],
+    ['no lines', { lines: [] }],
+    ['a withheld charge', { chargeWithheld: true }],
+    ['a printed deposit, payment, or balance', { settlementPrinted: true }],
+    ['payroll tax moved onto the lines', { payrollTaxPlaced: true }],
+    ['another printed tax row', { taxCharges: [{ label: 'EnvChg Tax', amount: '$1.00' }] }],
+  ])('does nothing with %s', (_name, overrides) => {
+    expect(derive(overrides)).toEqual(none);
+  });
+
+  it('does nothing on a payroll recharge invoice, where header tax is not sales or use tax', () => {
+    const lines = payrollRechargeSiblingRows;
+    const derived = deriveTaxFromPrintedRate(none, { rate: '5%', amountDue: '$5,145.00', lines });
+
+    expect(derived).toEqual(none);
+  });
+
+  it('reads the rate out of the printed rate text', () => {
+    expect(derive({ rate: 'Tax Rate 5.0%' }).taxAmount).toBe('5.00');
+  });
+
+  it('keeps an unlabeled printed zero tax, which normalization does not mark as cleared', () => {
+    const zero = { taxAmount: '0.00', taxCleared: false };
+
+    expect(derive({}, zero)).toBe(zero);
+  });
+
+  it.each(['.5%', '7,5%', '112.5%', '1.5.5%'])('does not read the rate from "%s", which has a stray digit, dot, or comma before it', rate => {
+    expect(derive({ rate }).computedFromRate).toBeUndefined();
+  });
+
+  it('reads a rate with a leading text and a space before the percent sign', () => {
+    expect(derive({ rate: 'TAX (5 %)' }).taxAmount).toBe('5.00');
   });
 });

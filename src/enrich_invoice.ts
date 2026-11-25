@@ -66,13 +66,14 @@ import {
   removeFreeRows,
   removeZeroAmountLines,
   resolveInvoiceLineQuantityDisplayed,
+  freightFromRowsMessage,
   splitFreightLines,
   withComposedLineDescriptions,
   type EmailBudgetSplitOutcome,
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, removeBreakdownRows, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, deriveTaxFromPrintedRate, hasPrintedSettlement, removeBreakdownRows, isPayrollTaxCharge, placeChargesOnPoServiceLines, placePayrollTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { hasPrintedRetainage, reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -406,6 +407,7 @@ async function processInvoice(
       taxCleared: resolvedHeaderTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
+      freightFromRows: headerFreightFromRows,
     } = resolveHeaderChargeAmounts({
       extractedFreightAmount: placedCharges.freightAmount,
       extractedFreightLabel: placedCharges.freightLabel,
@@ -467,7 +469,7 @@ async function processInvoice(
     });
     const freightCleared = headerFreightCleared && restoredFreight.freight == null;
     // A printed environmental or other tax-like charge joins header tax when it exactly explains the shortfall.
-    const taxCharges = applyPrintedTaxCharges({
+    const printedTaxCharges = applyPrintedTaxCharges({
       charges: placedCharges.otherCharges,
       amountDue: extractedAmountDue,
       lines: extractedLines,
@@ -480,7 +482,22 @@ async function processInvoice(
       lineSubtotal: result.extractedLineSubtotal,
       settlementPrinted,
     });
-    const { taxAmount: extractedTaxAmount, taxCleared } = taxCharges;
+    // A printed rate without a printed tax amount gives the tax only when the amount due and the rate agree.
+    const taxCharges = deriveTaxFromPrintedRate(printedTaxCharges, {
+      rate: result.extractedTaxRate,
+      amountDue: extractedAmountDue,
+      lines: extractedLines,
+      freight: restoredFreight.freight ?? resolvedFreightAmount,
+      summaryCharges: result.extractedSummaryCharges,
+      taxCharges: placedCharges.otherCharges,
+      taxLabel: result.extractedTaxLabel,
+      chargeWithheld,
+      settlementPrinted,
+      payrollTaxPlaced: payrollTaxCharges.addedLines > 0,
+      classificationLines: result.extractedInvoiceLines ?? [],
+      poLines,
+    });
+    const { taxAmount: extractedTaxAmount, taxCleared, computedFromRate: taxComputedFromRate } = taxCharges;
     const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
     const submitsLines = canModifyInvoice && Boolean(submitSupplierWID);
     // Annotate-only runs never change lines, so both freight behaviors need a submit.
@@ -495,8 +512,10 @@ async function processInvoice(
     const checkedReconciliation = submitsLines
       ? chargeReconciliation
       : extractedChargeReconciliation(extractedLines, extractedCharges);
+    const freightRowsMessage = submitsLines && !restoredFreight.message && !freightAsLines ? freightFromRowsMessage(extractedLines, { freight: extractedFreightAmount, headerFreightRead: !headerFreightFromRows }) : undefined;
     let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(freightRowsMessage ? [freightRowsMessage] : []),
       ...(payrollTaxCharges.message ? [payrollTaxCharges.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...(submitsLines
@@ -727,7 +746,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatBreakdownRowNotes(breakdown.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown, taxCharges.computedFromRate) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatBreakdownRowNotes(breakdown.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatBankingInfoNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const currencyFellBack = submissionFallbacks.some((fallback) => fallback.field === 'currency');
@@ -869,6 +888,7 @@ async function processInvoice(
         suppliersInvoiceNumber: submittedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
         taxAmount: extractedTaxAmount,
+        ...(taxComputedFromRate ? { taxComputedFromRate } : {}),
         freightCleared,
         taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,

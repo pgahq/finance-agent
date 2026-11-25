@@ -20,6 +20,28 @@ export function getS3Config(env: NodeJS.ProcessEnv): S3Config {
   };
 }
 
+const MAX_ENCODED_METADATA_LENGTH = 1000;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const NEEDS_ESCAPE = /[^\x20-\x7E]|%/;
+
+// S3 sends user metadata as HTTP headers, which only carry printable ASCII, and caps all metadata at 2 KB.
+export function encodeS3MetadataValue(value: string): string {
+  let encoded = '';
+  for (const char of value.replace(LONE_SURROGATE, '\uFFFD')) {
+    const piece = NEEDS_ESCAPE.test(char) ? encodeURIComponent(char) : char;
+    if (encoded.length + piece.length > MAX_ENCODED_METADATA_LENGTH) break;
+    encoded += piece;
+  }
+  return encoded;
+}
+
+export function decodeS3MetadataValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 export async function putBinaryToS3(
   config: S3Config,
@@ -35,6 +57,8 @@ export async function putBinaryToS3(
       Body: buffer,
       ContentType: contentType,
       Metadata: metadata
+        ? Object.fromEntries(Object.entries(metadata).map(([key, value]) => [key, encodeS3MetadataValue(value)]))
+        : undefined
     });
     
     await s3Client.send(command);

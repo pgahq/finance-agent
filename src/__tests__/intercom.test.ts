@@ -9,6 +9,7 @@ import {
   fetchConversationMessages,
   getIntercomConfig,
   intercomConversationCreatedAtToIsoDate,
+  sanitizeFileName,
   latestIntercomMessageAt,
   IntercomAttachmentTooLargeError,
   IntercomNoAttachmentError,
@@ -826,6 +827,36 @@ describe('intercom', () => {
 
       await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))
         .rejects.toBeInstanceOf(IntercomUpstreamError);
+    });
+  });
+
+  describe('sanitizeFileName', () => {
+    it('keeps the basename and drops path segments', () => {
+      expect(sanitizeFileName('C:\\scans\\invoice.pdf')).toBe('invoice.pdf');
+      expect(sanitizeFileName('../../etc/invoice.pdf')).toBe('invoice.pdf');
+    });
+
+    it('removes tabs, newlines and other control characters', () => {
+      expect(sanitizeFileName('Invoice\tMarch\n2026\r.pdf')).toBe('InvoiceMarch2026.pdf');
+      expect(sanitizeFileName('in\u0000voice\u007F\u0085.pdf')).toBe('invoice.pdf');
+    });
+
+    it('falls back when only control characters are left', () => {
+      expect(sanitizeFileName('\t\n')).toBe('attachment.pdf');
+    });
+
+    it('cuts a long name at 200 code points without splitting an emoji', () => {
+      const name = `${'a'.repeat(199)}\u{1F4C4}tail.pdf`;
+      const result = sanitizeFileName(name);
+
+      expect(result).toBe(`${'a'.repeat(199)}\u{1F4C4}`);
+      expect(() => encodeURIComponent(result)).not.toThrow();
+      expect(sanitizeFileName('b'.repeat(250))).toHaveLength(200);
+    });
+
+    it('keeps non-ASCII names intact', () => {
+      expect(sanitizeFileName('Maple Ridge\u2019s Invoice.pdf')).toBe('Maple Ridge\u2019s Invoice.pdf');
+      expect(sanitizeFileName('Caf\u00e9 \u8bf7\u6b3e\u5355 \u{1F4C4}.pdf')).toBe('Caf\u00e9 \u8bf7\u6b3e\u5355 \u{1F4C4}.pdf');
     });
   });
 });

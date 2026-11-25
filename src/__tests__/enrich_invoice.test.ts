@@ -2294,6 +2294,108 @@ describe('enrich_invoice', () => {
     expect(notes).not.toContain('but the amount due is');
   });
 
+  it('books the tax from a printed rate with no printed tax amount on update (fictional)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin477515Header, supin477515Rows, supin477515Detail } = require('./fixtures/supin_477515.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Pop Cart Co', memo: 'frozen pops catering' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin477515Header,
+      extractedInvoiceLines: supin477515Rows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({
+        lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 0, extendedAmount: Number(line.totalPrice.replace(/[$,]/g, ''))
+      })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.extractedTaxAmount).toBe('44.13');
+    const notes = params.buildNotes([]);
+    expect(notes).toContain(`Tax Amount (computed from printed rate): 44.13 (${supin477515Detail})`);
+    expect(notes).toContain(`Amount check: ${supin477515Detail}, so lines, freight, and tax equal the amount due.`);
+    expect(notes).not.toContain('but the amount due is');
+  });
+
+  it('keeps the amount mismatch when the printed rate does not explain the gap on update (fictional)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin477515Header, supin477515Rows } = require('./fixtures/supin_477515.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Pop Cart Co', memo: 'frozen pops catering' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin477515Header,
+      extractedTaxRate: '6%',
+      extractedInvoiceLines: supin477515Rows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({
+        lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 0, extendedAmount: Number(line.totalPrice.replace(/[$,]/g, ''))
+      })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.extractedTaxAmount).toBeUndefined();
+    expect(params.buildNotes([])).not.toContain('computed from printed rate');
+  });
+
   it('replaces the printed lines with one current-payment-due line on update (SUPIN-474922)', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -2677,6 +2779,43 @@ describe('enrich_invoice', () => {
       }));
       expect(params.buildNotes([])).toContain(
         'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.'
+      );
+    });
+
+    it('books supplier-coded delivery rows as header freight when no freight was printed as one amount', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const invoiceLines = require('../lib/invoice_lines.js');
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedAmountDue: '$1,125.35',
+        extractedFreightAmount: null,
+        extractedFreightLabel: null,
+        extractedTaxAmount: '$14.10',
+        extractedTaxLabel: 'Sales Tax',
+        extractedInvoiceLines: [
+          { description: 'Unleaded Fuel', quantity: 1, unitCost: '640.00', totalPrice: '$640.00', hasDiscount: false },
+          { description: 'Diesel Fuel', quantity: 1, unitCost: '301.25', totalPrice: '$301.25', hasDiscount: false },
+          { description: 'ABC - Delivery Charge', quantity: 4, unitCost: '40.00', totalPrice: '$160.00', hasDiscount: false },
+          { description: 'XYZ - Hazmat/Environmental Delivery Fee', quantity: 1, unitCost: '10.00', totalPrice: '$10.00', hasDiscount: false },
+        ],
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [
+          { lineOrder: 1, description: 'Unleaded Fuel', quantity: 1, unitCost: 640, extendedAmount: 640 },
+          { lineOrder: 2, description: 'Diesel Fuel', quantity: 1, unitCost: 301.25, extendedAmount: 301.25 },
+        ],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+        .toEqual(['Unleaded Fuel', 'Diesel Fuel']);
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({ extractedFreightAmount: '170', freightCleared: false }));
+      expect(params.buildNotes([])).toContain(
+        'Amount check: Freight $170.00 is the sum of these 2 freight rows, which are not invoice lines: "ABC - Delivery Charge" ($160.00), "XYZ - Hazmat/Environmental Delivery Fee" ($10.00).'
       );
     });
   });
