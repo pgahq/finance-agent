@@ -89,6 +89,32 @@ live('reimbursement packet read on fictional packets (live)', () => {
     }
   }, 600000);
 
+  // The email says only "Expenses" and the file name abbreviates "Exp Rpt", so the form itself has to show it is one.
+  it('books a grid expense form whose email and file name only say Expenses and Exp Rpt', async () => {
+    const sample = gridForm();
+    const pdf = await gridExpenseFormPdf(sample, folio());
+    const expected = Math.round(gridFormTotals(sample).grand * 100);
+    const email = { subject: 'Jordan Reyes Annual Meeting Expenses', plainTextBody: 'Coding: 310. Cost Center: Sample Programs. LOB: Sample Business.' };
+    for (let run = 0; run < RUNS; run++) {
+      const packet = await read(pdf, 'REYES JORDAN_Exp Rpt_NOV 2026.pdf', email);
+      expect(packet?.kind).toBe('reimbursement');
+      expect(packet?.payeeName).toMatch(/jordan.*reyes/i);
+      if (packet?.unconfirmed) {
+        expect(packet.notConfirmed).toContain('formAmount');
+      } else {
+        expect(cents(packet?.formAmountToPay)).toBe(expected);
+      }
+    }
+  }, 600000);
+
+  it('keeps a vendor invoice under an Expenses subject off the reimbursement path', async () => {
+    const pdf = await vendorInvoicePdf('Sample Event Rentals LLC', 'INV-2093', 3200);
+    for (let run = 0; run < RUNS; run++) {
+      const packet = await read(pdf, 'INV-2093 event expenses.pdf', { subject: 'Event expenses INV-2093', plainTextBody: 'Attached is our invoice.' });
+      expect(packet?.kind).toBe('supplier_invoice');
+    }
+  }, 300000);
+
   it('books the form amount and payee, not the folio, when the folio totals more', async () => {
     const pdf = await reimbursementPacketPdf(form(), folio());
     expect(folioTotal(folio())).toBeGreaterThan(1000);
