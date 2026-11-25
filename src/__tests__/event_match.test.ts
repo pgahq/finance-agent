@@ -143,6 +143,47 @@ describe('rankEventCandidates', () => {
     expect(ranking.ranked.map(event => event.workdayId)).toEqual([MAIN_2026.workdayId, HARBOR.workdayId]);
   });
 
+  it('prefers the preferred year before the wording tier when the email names no year', () => {
+    const season2026 = { workdayId: 'wid-main-2026-season', name: '2026 Lakeside Junior Skills Series Season' };
+    const ranking = rankEventCandidates('Lakeside Jr Skills Series', [MAIN_2025, season2026], { preferredYear: 2026 });
+
+    expect(ranking.recommended?.workdayId).toBe(season2026.workdayId);
+    expect(ranking.ranked.map(event => event.workdayId)).toEqual([season2026.workdayId, MAIN_2025.workdayId]);
+  });
+
+  it('matches a cached event whose name carries no year, even when the email names one', () => {
+    const yearless = { workdayId: 'wid-annual', name: 'Harbor Annual Meeting' };
+
+    expect(rankEventCandidates('2026 Harbor Annual Meeting', [yearless, MAIN_2026]).recommended?.workdayId).toBe(yearless.workdayId);
+  });
+
+  it('reads an attached section code only in uppercase, like a standalone one', () => {
+    expect(parseEventText('26zb Lakeside Jr. Skills Series', KNOWN).sectionCode).toBeNull();
+    expect(rankEventCandidates('26zb Lakeside Jr. Skills Series', CATALOG).recommended).toBeNull();
+  });
+
+  it('keeps the word "a" so distinct names stay distinct', () => {
+    const withArticle = { workdayId: 'wid-a-team', name: '2026 A Team Classic' };
+    const without = { workdayId: 'wid-team', name: '2026 Team Classic' };
+
+    expect(rankEventCandidates('2026 A Team Classic', [without, withArticle]).recommended?.workdayId).toBe('wid-a-team');
+    expect(rankEventCandidates('2026 Team Classic', [withArticle, without]).recommended?.workdayId).toBe('wid-team');
+  });
+
+  it('counts a repeated cache row once and ignores a row with no name', () => {
+    const ranking = rankEventCandidates('26 Lakeside Jr. Skills Series', [MAIN_2026, { ...MAIN_2026 }, { workdayId: 'wid-blank', name: '  ' }]);
+
+    expect(ranking.recommended?.workdayId).toBe(MAIN_2026.workdayId);
+    expect(ranking.ranked).toHaveLength(1);
+  });
+
+  it('does not treat a known section code inside ordinary lowercase prose as a section', () => {
+    const parsed = parseEventText('26 Lakeside Jr. Skills Series zb', KNOWN);
+
+    expect(parsed.sectionCode).toBeNull();
+    expect(parsed.tokens).toContain('zb');
+  });
+
   it('returns nothing for an empty query', () => {
     expect(rankEventCandidates('26', CATALOG).ranked).toEqual([]);
   });

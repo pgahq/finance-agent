@@ -46,10 +46,10 @@ const ABBREVIATIONS: Record<string, string> = {
   invit: 'invitational',
 };
 
-const STOPWORDS = new Set(['the', 'of', 'and', 'a']);
+const STOPWORDS = new Set(['the', 'of', 'and']);
 
 const CACHED_SECTION_PREFIX = /^\s*(\d{4}|\d{2})([A-Za-z]{2,5})\s*-\s*/;
-const YEAR_WITH_SECTION = /^(\d{4}|\d{2})([A-Za-z]{2,5})$/;
+const YEAR_WITH_SECTION = /^(\d{4}|\d{2})([A-Z]{2,5})$/;
 const FISCAL_YEAR = /^fy(\d{4}|\d{2})$/i;
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2099;
@@ -110,11 +110,11 @@ export function parseEventText(text: string, knownSectionCodes: ReadonlySet<stri
       }
     }
     const attached = YEAR_WITH_SECTION.exec(raw);
-    if (attached && knownSectionCodes.has(attached[2].toUpperCase())) {
+    if (attached && knownSectionCodes.has(attached[2])) {
       const parsed = expandYear(attached[1]);
       if (parsed != null) {
         year ??= parsed;
-        sectionCode ??= attached[2].toUpperCase();
+        sectionCode ??= attached[2];
         continue;
       }
     }
@@ -178,8 +178,8 @@ const TIER_ORDER: Record<EventMatchTier, number> = { exact: 0, contains: 1, sema
 /**
  * Ranks cached events for the event text an email names. An event qualifies only if its year does not
  * contradict a year the email names and it is the main event unless the email names that event's section. Among
- * those, an event whose words equal the email's beats one that adds words, and an event for the preferred year
- * (the email's, else `preferredYear`) beats other years. Events with similarity and no word match rank last by
+ * those, an event for the preferred year (the email's, else `preferredYear`) beats other years, and then an event
+ * whose words equal the email's beats one that adds words. A repeated WID counts once. Events with similarity and no word match rank last by
  * similarity and are never recommended on their own.
  */
 export function rankEventCandidates<T extends EventCandidate>(
@@ -193,7 +193,12 @@ export function rankEventCandidates<T extends EventCandidate>(
   const wantedYear = parsedQuery.year ?? options.preferredYear ?? null;
   const queryTokens = new Set(parsedQuery.tokens);
 
+  const seen = new Set<string>();
   const entries = candidates.flatMap((candidate) => {
+    // The cache has no uniqueness guarantee on (type, workday_id); a repeated row is one event, and a row
+    // without a name cannot be matched.
+    if (!candidate.name.trim() || seen.has(candidate.workdayId)) return [];
+    seen.add(candidate.workdayId);
     const parsed = parseEventText(candidate.name, known);
     if (!passesGates(gate, parsed)) return [];
     const eventTokens = new Set(parsed.tokens);
@@ -212,8 +217,9 @@ export function rankEventCandidates<T extends EventCandidate>(
   });
 
   entries.sort((left, right) => (
-    TIER_ORDER[left.event.tier] - TIER_ORDER[right.event.tier]
+    Number(left.event.tier === 'semantic') - Number(right.event.tier === 'semantic')
     || left.yearRank - right.yearRank
+    || TIER_ORDER[left.event.tier] - TIER_ORDER[right.event.tier]
     || (left.event.tier === 'semantic' ? 0 : left.extra - right.extra)
     || (right.event.similarity ?? 0) - (left.event.similarity ?? 0)
     || left.event.name.localeCompare(right.event.name)

@@ -134,6 +134,33 @@ describe('enrichInvoiceFromAttachments event rule', () => {
     expect(result.emailBudgetSplits?.[1].event).toBeNull();
   });
 
+  it('leaves the event unresolved when the tool had no recommendation and several events fit', async () => {
+    const result = await enrich(matching(event('Lakeside Jr Skills Series', null)), email('Event: Lakeside Jr Skills Series'), null);
+
+    expect(buildEmailWorktags(result)?.eventWid).toBeNull();
+    expect(formatEmailWorktagNotes(result)).toContain('not applied; several events fit');
+  });
+
+  it('resolves each budget split\'s event on its own', async () => {
+    const modelResult = matching(event('26 Lakeside Jr. Skills Series', SECTION_2026), event('26ZB Lakeside Jr. Skills Series', 'wid-zb-27'));
+    const result = await enrich(modelResult, email('Event: 26 Lakeside Jr. Skills Series; Budget A: 26ZB Lakeside Jr. Skills Series'));
+
+    expect(result.emailWorktags?.event).toMatchObject({ workdayId: MAIN_2026 });
+    expect(result.emailBudgetSplits?.[0].event).toMatchObject({ workdayId: SECTION_2026 });
+  });
+
+  it('ignores cache rows with no usable name', async () => {
+    (getDocumentsByType as jest.Mock).mockResolvedValue([
+      ...CACHE,
+      { workday_id: 'wid-blank', content: '', metadata: {} },
+      { workday_id: 'wid-no-prefix', content: '2026 Harbor Open Championship', metadata: null },
+    ]);
+
+    const result = await enrich(matching(event('26 Lakeside Jr. Skills Series', SECTION_2026)));
+
+    expect(buildEmailWorktags(result)?.eventWid).toBe(MAIN_2026);
+  });
+
   it('reads an event named only in an Intercom admin note', async () => {
     const note = 'AP note: code this to the 26 Lakeside Jr. Skills Series.';
     const result = await enrich(matching(event('26 Lakeside Jr. Skills Series', null)), email('Please see the attached invoice.', note));

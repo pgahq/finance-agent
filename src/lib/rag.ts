@@ -125,8 +125,9 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // unlike requesting an unbounded (e.g. Number.MAX_SAFE_INTEGER) SQL limit.
 const PAYMENT_TERMS_CANDIDATE_POOL = 1000;
 
-// The event cache is a window of a few hundred events. All of them are scored so the year, section, and wording
-// rules rank the whole cache instead of whichever few the embedding put first.
+// The event cache is a window of a few hundred events (cache_events.ts keeps the last 18 months). The pool is
+// far above that, so the year, section, and wording rules rank the whole cache instead of whichever few the
+// embedding put first; the tool logs when the pool is ever reached.
 export const EVENT_CANDIDATE_POOL = 1000;
 const DEFAULT_EVENT_RESULT_LIMIT = 25;
 
@@ -432,6 +433,10 @@ export const findEventsTool = tool({
       limit: EVENT_CANDIDATE_POOL,
       similarityThreshold: 0
     });
+
+    if (candidates.length >= EVENT_CANDIDATE_POOL) {
+      debug(`Find Events Tool: the event cache reached the ${EVENT_CANDIDATE_POOL}-event candidate pool; events past it were not ranked`);
+    }
 
     const threshold = similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD;
     const ranking = rankEventCandidates(
