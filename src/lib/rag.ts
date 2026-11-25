@@ -8,6 +8,7 @@ import { parseCompanySearchQuery } from './company_search_query.js';
 import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
+import { eventNameOf, rankEventCandidates } from './event_match.js';
 import { gatewayProviderPin } from './models.js';
 import { supplierRecordFromDocument } from './supplier_match.js';
 export type { DocumentType } from './database.js';
@@ -123,6 +124,12 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // worst-case query/transfer/sort/log cost if the cache were ever corrupted into many rows for one type,
 // unlike requesting an unbounded (e.g. Number.MAX_SAFE_INTEGER) SQL limit.
 const PAYMENT_TERMS_CANDIDATE_POOL = 1000;
+
+// The event cache is a window of a few hundred events (cache_events.ts keeps the last 18 months). The pool is
+// far above that, so the year, section, and wording rules rank the whole cache instead of whichever few the
+// embedding put first; the tool logs when the pool is ever reached.
+export const EVENT_CANDIDATE_POOL = 1000;
+const DEFAULT_EVENT_RESULT_LIMIT = 25;
 
 // RAG query interface
 export interface RAGQuery {
@@ -406,33 +413,65 @@ export const findCompaniesTool = tool({
 });
 
 export const findEventsTool = tool({
-  description: `Search for events using semantic similarity and exact text matching.
+  description: `Search for events by name. Results are ranked by year, section, and wording, not by similarity alone: "26" matches 2026, "Jr." matches "Junior", and an event whose cached name starts with a section code (such as "26ZB-...") is a section's own copy, offered only when the email names that section. Otherwise the main event is matched.
 
-  Use this tool to look up events (tournaments, championships, conferences, etc.) by name when mentioned in an email.
+  Use this tool to look up events (tournaments, championships, conferences, leagues, etc.) by name when mentioned in an email. Pass the event text exactly as the email writes it, including any year and section code.
 
-  Examples: "2026 PGA Championship", "Masters Tournament", "Ryder Cup"`,
+  The response has "recommended" (the one event that fits, or null) and, when several events fit equally, "ambiguous". Use recommended; when it is null, leave the event unresolved.
+
+  Examples: "2026 PGA Championship", "Masters Tournament", "26 Jr. League"`,
   inputSchema: z.object({
     query: z.string().describe('Event name or description from the email'),
-    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
-    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 25)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score for events matched only by meaning (0-1, default: 0.3)'),
+    preferredYear: z.number().int().min(2000).max(2099).optional().describe('Year to prefer when the email names none, such as the invoice or service year')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
-    const results = await queryDocuments({
+  execute: async ({ query, limit, similarityThreshold, preferredYear }) => {
+    const candidates = await queryDocuments({
       query,
       documentType: 'event',
-      limit,
-      similarityThreshold
+      limit: EVENT_CANDIDATE_POOL,
+      similarityThreshold: 0
     });
 
-    debug(`Find Events Tool: Found ${results.length} events`);
+    const poolReached = candidates.length >= EVENT_CANDIDATE_POOL;
+    if (poolReached) {
+      debug(`Find Events Tool: the event cache reached the ${EVENT_CANDIDATE_POOL}-event candidate pool; events past it were not ranked, so nothing is recommended`);
+    }
+
+    const threshold = similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD;
+    const ranking = rankEventCandidates(
+      query,
+      candidates.map(result => ({
+        workdayId: result.workday_id,
+        name: eventNameOf(result),
+        similarity: result.similarity,
+        content: result.content,
+        metadata: result.metadata,
+      })),
+      { preferredYear }
+    );
+    const ranked = ranking.ranked.filter(event => event.tier !== 'semantic' || (event.similarity ?? 0) >= threshold);
+    const results = ranked.slice(0, limit ?? DEFAULT_EVENT_RESULT_LIMIT);
+
+    debug(`Find Events Tool: "${query}" (year ${ranking.queryYear ?? 'none'}, section ${ranking.querySectionCode ?? 'none'}) matched ${ranked.length} events`);
+    debug('Find Events Tool results:', results.map(event => ({
+      workdayId: event.workdayId,
+      name: event.name,
+      tier: event.tier,
+      similarity: (event.similarity ?? 0).toFixed(3),
+    })));
 
     return {
       success: true,
-      results: results.map(result => ({
-        workdayId: result.workday_id,
-        content: result.content,
-        metadata: result.metadata,
-        similarity: result.similarity
+      recommended: ranking.recommended && !poolReached ? { workdayId: ranking.recommended.workdayId, name: ranking.recommended.name } : null,
+      ...(ranking.ambiguous.length > 0 && !poolReached ? { ambiguous: ranking.ambiguous.map(event => ({ workdayId: event.workdayId, name: event.name })) } : {}),
+      results: results.map(event => ({
+        workdayId: event.workdayId,
+        content: event.content,
+        metadata: event.metadata,
+        similarity: event.similarity,
+        match: event.tier,
       }))
     };
   }

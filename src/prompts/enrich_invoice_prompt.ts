@@ -3,8 +3,8 @@ import { z } from 'zod';
 // Coding fields shared by the invoice-wide email worktags and each email budget split
 const emailCodingFields = {
   event: z.object({
-    extracted: z.string().nullable().describe('The event name or description as mentioned in the email'),
-    workdayId: z.string().nullable().describe('The workdayId from the top result returned by findEvents (a WID used to reference the event in Workday). Populate after calling findEvents.'),
+    extracted: z.string().nullable().describe('The event name or description exactly as the email or AP notes write it, keeping any year ("26", "2026") and section code ("26ZB") they write'),
+    workdayId: z.string().nullable().describe('The workdayId of the `recommended` event returned by findEvents (a WID used to reference the event in Workday). Null when findEvents returns no recommended event. Populate after calling findEvents.'),
   }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
   lineOfBusiness: z.object({
     extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
@@ -251,7 +251,7 @@ You have access to nine search tools:
 - **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice). Call it with the billed company name or Company_Reference_ID in \`query\` and the bill-to street address in \`address\`. A billed name can be a Finance Agent alias, not only the legal companyName. Never concatenate street, city, state, or ZIP into \`query\`. Name rank is embedding similarity (plus exact companyName / Company_Reference_ID / Finance Agent alias), not substring. Each result is independently tagged addressMatch unique, shared, or none from the full company cache. A unique tag means exactly one cached company sits on that street — it may be appended if name search missed it. Shared means several companies share that street; ZIP and city never pick among them. Do not prefer address over name or name over address. Recommend a company when those signals agree. If they point at different companies, leave workdayId unset.
 - **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
 - **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday. Results include relatedLob (default and allowed Line of Business ids).
-- **findEvents**: Search our events database by name to look up events (tournaments, championships, conferences) in Workday.
+- **findEvents**: Search our events database by name to look up events (tournaments, championships, conferences) in Workday. It ranks by year, section, and wording and returns a \`recommended\` event.
 - **findLobs**: Search the full LOB catalog only when the email mentions a Line of Business and does not also identify a cost center. Do not use this to pick among all LOBs when a cost center is already resolved.
 - **findFunds**: Search our funds database by reference ID or name to look up funds in Workday.
 - **findSpendCategories**: Search our spend categories database by name or reference to look up spend categories in Workday.
@@ -386,10 +386,10 @@ If email context is provided, scan the email body for any contextual mentions of
    - If no match is found, set emailWorktags.costCenter.name and emailWorktags.costCenter.code to null
 
 2. **Events**: Look for any mention of an event, occasion, tournament, conference, or activity that might correspond to a Workday event (e.g., "2026 PGA Championship", "Q3 Sales Summit"). You do not need an explicit "Event:" label — use context to infer whether something is likely a Workday event. If found:
-   - Call **findEvents** with the event name to resolve it in Workday
-   - Populate emailWorktags.event.extracted with what you found in the email
-   - Populate emailWorktags.event.workdayId with the workdayId from the top result (this WID is used to reference the event in Workday)
-   - If no match is found, set emailWorktags.event.workdayId to null
+   - Call **findEvents** with the event name exactly as the email or AP notes write it. Keep a year ("26", "2026") and a section code ("26ZB") when they write one, and do not add a year or section they do not write. When AP notes and the email name different events, use the AP notes.
+   - Populate emailWorktags.event.extracted with what you found in the email, keeping the wording
+   - Populate emailWorktags.event.workdayId with the workdayId of the \`recommended\` event (this WID is used to reference the event in Workday). Do not choose another event from results by its name, year, or section code: the tool already applies the year and section rules, and an event for a section is matched only when the email names that section.
+   - If recommended is null (no match, or several events fit equally), set emailWorktags.event.workdayId to null
 
 3. **Lines of Business**: Look for any mention of a line of business, business unit, or LOB — whether explicit (e.g., "Golf LOB") or contextual (e.g., the email concerns golf-related services). If found:
    - If you already resolved a cost center, do **not** call findLobs. Keep the mentioned LOB when it is already in that cost center's relatedLob default or allowed ids. Otherwise use relatedLob.defaultReferenceId when present, else the unique allowed id from relatedLob.allowedReferenceIds. Populate emailWorktags.lineOfBusiness.referenceId from that value.
