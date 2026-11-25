@@ -434,8 +434,9 @@ export const findEventsTool = tool({
       similarityThreshold: 0
     });
 
-    if (candidates.length >= EVENT_CANDIDATE_POOL) {
-      debug(`Find Events Tool: the event cache reached the ${EVENT_CANDIDATE_POOL}-event candidate pool; events past it were not ranked`);
+    const poolReached = candidates.length >= EVENT_CANDIDATE_POOL;
+    if (poolReached) {
+      debug(`Find Events Tool: the event cache reached the ${EVENT_CANDIDATE_POOL}-event candidate pool; events past it were not ranked, so nothing is recommended`);
     }
 
     const threshold = similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD;
@@ -463,8 +464,8 @@ export const findEventsTool = tool({
 
     return {
       success: true,
-      recommended: ranking.recommended ? { workdayId: ranking.recommended.workdayId, name: ranking.recommended.name } : null,
-      ...(ranking.ambiguous.length > 0 ? { ambiguous: ranking.ambiguous.map(event => ({ workdayId: event.workdayId, name: event.name })) } : {}),
+      recommended: ranking.recommended && !poolReached ? { workdayId: ranking.recommended.workdayId, name: ranking.recommended.name } : null,
+      ...(ranking.ambiguous.length > 0 && !poolReached ? { ambiguous: ranking.ambiguous.map(event => ({ workdayId: event.workdayId, name: event.name })) } : {}),
       results: results.map(event => ({
         workdayId: event.workdayId,
         content: event.content,

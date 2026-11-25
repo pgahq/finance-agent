@@ -63,6 +63,12 @@ function expandYear(digits: string): number | null {
   return value >= MIN_TWO_DIGIT_YEAR && value <= MAX_TWO_DIGIT_YEAR ? 2000 + value : null;
 }
 
+function sectionPrefixOf(text: string): { year: number; sectionCode: string; length: number } | null {
+  const prefix = CACHED_SECTION_PREFIX.exec(text);
+  const year = prefix ? expandYear(prefix[1]) : null;
+  return prefix && year != null ? { year, sectionCode: prefix[2].toUpperCase(), length: prefix[0].length } : null;
+}
+
 function rawTokens(text: string): string[] {
   return text.replace(/['’`]/g, '').split(/[^A-Za-z0-9]+/).filter(Boolean);
 }
@@ -83,11 +89,11 @@ export function parseEventText(text: string, knownSectionCodes: ReadonlySet<stri
   let sectionCode: string | null = null;
   let body = text;
 
-  const prefix = CACHED_SECTION_PREFIX.exec(text);
+  const prefix = sectionPrefixOf(text);
   if (prefix) {
-    year = expandYear(prefix[1]);
-    sectionCode = prefix[2].toUpperCase();
-    body = text.slice(prefix[0].length);
+    year = prefix.year;
+    sectionCode = prefix.sectionCode;
+    body = text.slice(prefix.length);
   }
 
   const raws = rawTokens(body);
@@ -153,8 +159,8 @@ export function eventNameOf(document: { content?: string | null; metadata?: unkn
 export function knownSectionCodesOf(names: readonly string[]): Set<string> {
   const codes = new Set<string>();
   for (const name of names) {
-    const prefix = CACHED_SECTION_PREFIX.exec(name);
-    if (prefix) codes.add(prefix[2].toUpperCase());
+    const prefix = sectionPrefixOf(name);
+    if (prefix) codes.add(prefix.sectionCode);
   }
   return codes;
 }
@@ -173,6 +179,21 @@ function passesGates(gate: Gate, event: ParsedEventText): boolean {
   return gate.querySectionCode ? event.sectionCode === gate.querySectionCode : event.sectionCode == null;
 }
 
+/**
+ * The cache has no uniqueness guarantee on (type, workday_id). A repeated row with the same normalized name is
+ * one event; a WID whose rows disagree on the name cannot be trusted, so it is dropped rather than letting row
+ * order choose. A row with no WID or no name cannot be matched.
+ */
+function usableCandidates<T extends EventCandidate>(candidates: readonly T[]): T[] {
+  const byWorkdayId = new Map<string, T[]>();
+  for (const candidate of candidates) {
+    if (!candidate.workdayId?.trim() || !candidate.name?.trim()) continue;
+    byWorkdayId.set(candidate.workdayId, [...(byWorkdayId.get(candidate.workdayId) ?? []), candidate]);
+  }
+  const key = (candidate: EventCandidate) => JSON.stringify(parseEventText(candidate.name));
+  return [...byWorkdayId.values()].flatMap((rows) => (rows.every((row) => key(row) === key(rows[0])) ? [rows[0]] : []));
+}
+
 const TIER_ORDER: Record<EventMatchTier, number> = { exact: 0, contains: 1, semantic: 2 };
 
 /**
@@ -187,18 +208,14 @@ export function rankEventCandidates<T extends EventCandidate>(
   candidates: readonly T[],
   options: { preferredYear?: number | null } = {}
 ): EventRanking<T> {
-  const known = knownSectionCodesOf(candidates.map((candidate) => candidate.name));
+  const usable = usableCandidates(candidates);
+  const known = knownSectionCodesOf(usable.map((candidate) => candidate.name));
   const parsedQuery = parseEventText(query, known);
   const gate: Gate = { queryYear: parsedQuery.year, querySectionCode: parsedQuery.sectionCode };
   const wantedYear = parsedQuery.year ?? options.preferredYear ?? null;
   const queryTokens = new Set(parsedQuery.tokens);
 
-  const seen = new Set<string>();
-  const entries = candidates.flatMap((candidate) => {
-    // The cache has no uniqueness guarantee on (type, workday_id); a repeated row is one event, and a row
-    // without a name cannot be matched.
-    if (!candidate.name.trim() || seen.has(candidate.workdayId)) return [];
-    seen.add(candidate.workdayId);
+  const entries = usable.flatMap((candidate) => {
     const parsed = parseEventText(candidate.name, known);
     if (!passesGates(gate, parsed)) return [];
     const eventTokens = new Set(parsed.tokens);
@@ -264,8 +281,9 @@ export function resolveEventCoding<E extends EventCoding>(
   events: readonly EventCandidate[],
   options: { preferredYear?: number | null } = {}
 ): (E & EventResolutionFields) | E | null | undefined {
-  const text = event?.extracted?.trim();
-  if (!event || !text) return event;
+  if (!event) return event;
+  const text = event.extracted?.trim();
+  if (!text) return event.workdayId ? { ...event, workdayId: null } : event;
 
   const ranking = rankEventCandidates(text, events, options);
   if (ranking.recommended) {
@@ -276,8 +294,9 @@ export function resolveEventCoding<E extends EventCoding>(
   }
   if (!event.workdayId) return event;
 
-  const chosen = events.find((candidate) => candidate.workdayId === event.workdayId);
-  return chosen && isCompatible(text, chosen, events)
+  const usable = usableCandidates(events);
+  const chosen = usable.find((candidate) => candidate.workdayId === event.workdayId);
+  return chosen && isCompatible(text, chosen, usable)
     ? { ...event, name: chosen.name }
     : { ...event, workdayId: null };
 }

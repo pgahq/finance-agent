@@ -108,8 +108,8 @@ function preferredEventYear(result: InvoiceEnrichmentResult): number | null {
 // The model picks an event from findEvents, and nothing else checks that pick against the email's year, section,
 // or wording. Check it against the cached events and fix or clear a pick the rules reject (see event_match.ts).
 async function applyEventRule(result: InvoiceEnrichmentResult): Promise<InvoiceEnrichmentResult> {
-  const hasEvent = Boolean(result.emailWorktags?.event?.extracted?.trim())
-    || (result.emailBudgetSplits ?? []).some(split => split?.event?.extracted?.trim());
+  const hasEvent = Boolean(result.emailWorktags?.event?.extracted?.trim() || result.emailWorktags?.event?.workdayId)
+    || (result.emailBudgetSplits ?? []).some(split => split?.event?.extracted?.trim() || split?.event?.workdayId);
   if (!hasEvent) return result;
 
   let events: EventCandidate[];

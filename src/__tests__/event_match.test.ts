@@ -177,6 +177,18 @@ describe('rankEventCandidates', () => {
     expect(ranking.ranked).toHaveLength(1);
   });
 
+  it('drops a WID whose rows disagree on the name, so row order cannot choose', () => {
+    const conflicting = [{ workdayId: 'wid-x', name: '2026 Lakeside Junior Skills Series' }, { workdayId: 'wid-x', name: '2025 Lakeside Junior Skills Series' }];
+
+    expect(rankEventCandidates('Lakeside Jr Skills Series', conflicting).ranked).toEqual([]);
+    expect(rankEventCandidates('Lakeside Jr Skills Series', [...conflicting].reverse()).ranked).toEqual([]);
+  });
+
+  it('learns section codes only from a valid year prefix', () => {
+    expect([...knownSectionCodesOf(['2100ZB-Event', '26QX-Event', '3AB-Event'])]).toEqual(['QX']);
+    expect(parseEventText('2100ZB-Event').sectionCode).toBeNull();
+  });
+
   it('does not treat a known section code inside ordinary lowercase prose as a section', () => {
     const parsed = parseEventText('26 Lakeside Jr. Skills Series zb', KNOWN);
 
@@ -229,7 +241,11 @@ describe('resolveEventCoding', () => {
     const unresolved = coding('Quarterly Gala', null);
     expect(resolveEventCoding(unresolved, CATALOG)).toBe(unresolved);
     expect(resolveEventCoding(null, CATALOG)).toBeNull();
-    const noText = coding(null, 'wid-x');
-    expect(resolveEventCoding(noText, CATALOG)).toBe(noText);
+    expect(resolveEventCoding(coding(null, null), CATALOG)).toEqual(coding(null, null));
+  });
+
+  it('clears a WID that has no event text to check it against', () => {
+    expect(resolveEventCoding(coding(null, 'wid-main-2026'), CATALOG)).toEqual(coding(null, null));
+    expect(resolveEventCoding(coding('  ', 'wid-main-2026'), CATALOG)).toEqual(coding('  ', null));
   });
 });

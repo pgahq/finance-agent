@@ -581,9 +581,11 @@ Primary Address: 100 PGA Tour Blvd`);
       it('logs when the event cache reaches the candidate pool', async () => {
         mockSearchDocuments.mockResolvedValue(Array.from({ length: EVENT_CANDIDATE_POOL }, (_, index) => eventRow(`wid-${index}`, `2026 Filler Event ${index}`, 0.4)));
 
-        await findEventsTool.execute({ query: '26 Lakeside Jr. Skills Series' });
+        const response = await findEventsTool.execute({ query: '26 Lakeside Jr. Skills Series' });
 
+        expect(response.recommended).toBeNull();
         expect(mockDebug).toHaveBeenCalledWith(expect.stringContaining('candidate pool'));
+
       });
 
       it('recommends the section copy when the email names the section', async () => {
