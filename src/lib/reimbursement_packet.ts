@@ -391,12 +391,14 @@ function mergedFormCoding(first: ReimbursementPacket, second: ReimbursementPacke
   return fields.some((field) => merged[field] !== null) ? merged : null;
 }
 
-// A field counts as named by the email when its label appears anywhere in the email text or AP notes. The company is
-// not here: `create_invoice` already prefers a company the email names over the form's.
+// A field counts as named by the email only when its label is followed by a value: "Cost Center: 72200", "LOB is Golf",
+// "cost center 72200". A bare label ("use the cost center on the form", "Cost Center Manager" in a signature, a blank
+// "Cost Center:" line in a template) names nothing, so the form's value stays available to the matching model.
+const VALUE_AFTER_LABEL = String.raw`(?:[ \t]*[:#=\u2013-]|[ \t]+is\b|[ \t]+to\b|(?=[ \t]+\d))[ \t]*(?!(?:on|per|from|in)[ \t]+the[ \t]+form\b)[A-Za-z0-9"'(]`;
 const CODING_FIELD_LABELS: ReadonlyArray<readonly [keyof FormCoding, RegExp]> = [
-  ['costCenter', /\bcost[\s_-]*cent(?:er|re)s?\b/i],
-  ['lineOfBusiness', /\bLOB\b|\bline[\s_-]+of[\s_-]+business\b/i],
-  ['spendCategory', /\bspend[\s_-]+categor(?:y|ies)\b/i],
+  ['costCenter', new RegExp(String.raw`\bcost[\s_-]*cent(?:er|re)s?${VALUE_AFTER_LABEL}`, 'i')],
+  ['lineOfBusiness', new RegExp(String.raw`(?:\bLOB\b|\bline[\s_-]+of[\s_-]+business\b)${VALUE_AFTER_LABEL}`, 'i')],
+  ['spendCategory', new RegExp(String.raw`\bspend[\s_-]+categor(?:y|ies)${VALUE_AFTER_LABEL}`, 'i')],
 ];
 
 /**
@@ -658,7 +660,16 @@ async function readGatedPacket(
     return undefined;
   }
   const fileList = readable.map((attachment) => `${attachment.fileName} (${attachment.contentType})`).join('; ');
-  const first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  let first: ReimbursementPacket;
+  try {
+    first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  } catch (error) {
+    // Only the word "expenses" opened this read, so an outage must not fail an ordinary invoice. An explicit signal
+    // still throws: a packet that says it is a reimbursement is never silently booked as a supplier invoice.
+    if (gate === 'explicit' || abortSignal?.aborted) throw error;
+    debug('Reimbursement packet read failed on an inferred signal; booking as a supplier invoice', { error });
+    return undefined;
+  }
   if (first.kind !== 'reimbursement') return first;
   if (gate === 'inferred' && !printsPayableTotal(first)) {
     // Nothing but the word "expenses" suggested a reimbursement and no form total backs it, so a lone folio or
@@ -1050,8 +1061,12 @@ export function reimbursementCodingNote(
 ): string {
   const printed = formCodingText(reimbursement.formCoding);
   const overridden = formCodingText(reimbursement.formCodingOverriddenByEmail);
+  const overriddenLabels = CODING_LABELS.filter(([field]) => reimbursement.formCodingOverriddenByEmail?.[field]).map(([, label]) => label);
+  const labelList = overriddenLabels.length > 1
+    ? `${overriddenLabels.slice(0, -1).join(', ')} and ${overriddenLabels[overriddenLabels.length - 1]}`
+    : overriddenLabels.join('');
   const email = overridden
-    ? `The email text or AP notes name ${overridden.replace(/ "[^"]*"/g, '')} themselves, so the form's ${overridden} ${applied.defaultCompany ? 'was not used' : 'was not passed to the matching model'}.`
+    ? `The email text or AP notes name the ${labelList} themselves, so the form's ${overridden} ${overriddenLabels.length > 1 ? 'were' : 'was'} ${applied.defaultCompany ? 'not used' : 'not passed to the matching model'}.`
     : '';
   if (!printed) return email ? `Reimbursement form coding: ${email}` : '';
   const company = applied.companyFromForm

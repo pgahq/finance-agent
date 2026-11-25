@@ -171,7 +171,7 @@ describe('an expense report whose email says only "Expenses"', () => {
     const { reimbursement } = decision as Extract<typeof decision, { outcome: 'apply' }>;
     expect(reimbursementMatchingContext(reimbursement)).not.toContain('COMMITTEES');
     expect(reimbursementCodingNote(reimbursement, { companyFromForm: false, defaultCompany: false })).toContain(
-      "The email text or AP notes name cost center, LOB themselves, so the form's cost center \"Member Meetings, Awards, and Communications\", LOB \"COMMITTEES\" was not passed to the matching model."
+      "The email text or AP notes name the cost center and LOB themselves, so the form's cost center \"Member Meetings, Awards, and Communications\", LOB \"COMMITTEES\" were not passed to the matching model."
     );
     expect(reimbursementNote(reimbursement)).toContain('Receipts and folios in the packet are supporting documents only');
     expect(reimbursementOcr(reimbursement).extractedInvoiceLines).toHaveLength(1);
@@ -183,6 +183,19 @@ describe('an expense report whose email says only "Expenses"', () => {
     const read = await readReimbursementPacket([{ fileName: 'packet.pdf', contentType: 'application/pdf' }] as never, emailContext as never);
     expect(aiResponse).toHaveBeenCalledTimes(2);
     expect(read).toMatchObject({ kind: 'reimbursement', gate: 'inferred', formAmountToPay: '$1,089.69' });
+  });
+
+  it('books as a supplier invoice when the read fails on an inferred signal, but still throws on an explicit one', async () => {
+    aiResponse.mockReset().mockRejectedValue(new Error('gateway timeout'));
+    const folio = [{ fileName: 'folio.pdf', contentType: 'application/pdf' }] as never;
+    expect(await readReimbursementPacket(folio, { subject: 'Code to travel expenses' } as never)).toBeUndefined();
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    await expect(readReimbursementPacket(folio, { subject: 'Hotel reimbursement' } as never)).rejects.toThrow('gateway timeout');
+    aiResponse.mockReset().mockRejectedValue(new Error('gateway timeout'));
+    await expect(readReimbursementPacket(
+      [{ fileName: 'Jane Exp Rpt.pdf', contentType: 'application/pdf' }] as never,
+      { subject: 'Expenses' } as never
+    )).rejects.toThrow('gateway timeout');
   });
 
   it('leaves a lone folio under an "Expenses" subject on the supplier invoice path, with one read', async () => {
@@ -220,14 +233,32 @@ describe('applyEmailCodingPrecedence', () => {
       formCoding: { ...form, lineOfBusiness: null },
       overriddenByEmail: { codingValue: null, costCenter: null, lineOfBusiness: 'COMMITTEES', spendCategory: null },
     });
-    expect(applyEmailCodingPrecedence(form, { plainTextBody: 'x', adminConversationParts: '<p>Cost Center 72200, Spend Category Travel</p>' } as never)).toEqual({
+    expect(applyEmailCodingPrecedence(form, { plainTextBody: 'x', adminConversationParts: '<p>Cost Center 72200, Spend Category: Travel</p>' } as never)).toEqual({
       formCoding: { ...form, costCenter: null, spendCategory: null },
       overriddenByEmail: { codingValue: null, costCenter: 'Sample Programs', lineOfBusiness: null, spendCategory: 'Lodging' },
     });
   });
 
+  it('does not treat a label without a value as the email naming the field', () => {
+    for (const text of [
+      'Please use the cost center on the form.',
+      'Regards,\nPat Sample\nCost Center Manager',
+      'Cost Center:\nLOB:\nSpend Category:\n',
+      'The LOB is on the form.',
+      'line of business per the form',
+    ]) {
+      expect(applyEmailCodingPrecedence(form, { plainTextBody: text } as never)).toEqual({ formCoding: form });
+    }
+  });
+
+  it('reads a label followed by a value in the usual ways', () => {
+    for (const text of ['Cost Center: 72200', 'cost center is 72200', 'coded to cost center 72200', 'Cost Center - Sample Programs', 'COST CENTRE #72200']) {
+      expect(applyEmailCodingPrecedence(form, { plainTextBody: text } as never).overriddenByEmail?.costCenter).toBe('Sample Programs');
+    }
+  });
+
   it('never drops the coding value, which carries the company the code already prefers from the email', () => {
-    const result = applyEmailCodingPrecedence({ ...form }, { plainTextBody: 'Cost Center, LOB, Spend Category' } as never);
+    const result = applyEmailCodingPrecedence({ ...form }, { plainTextBody: 'Cost Center: A. LOB: B. Spend Category: C.' } as never);
     expect(result.formCoding).toEqual({ codingValue: '310', costCenter: null, lineOfBusiness: null, spendCategory: null });
   });
 
