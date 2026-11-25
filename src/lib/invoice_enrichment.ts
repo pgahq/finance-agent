@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
-import { getDatabaseConnection, getDocumentsByWorkdayIds } from './database.js';
+import { getDatabaseConnection, getDocumentsByType, getDocumentsByWorkdayIds } from './database.js';
+import { eventNameOf, eventResolutionOf, resolveEventCoding, type EventCandidate } from './event_match.js';
 import { applyPaymentTermsDiscountRule, describePaymentTerms, paymentTermsKey, paymentTermsNameOf } from './payment_terms_match.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import {
@@ -96,6 +97,52 @@ async function applyPaymentTermsRule(result: InvoiceEnrichmentResult): Promise<I
     debug(`Payment terms "${extractedPaymentTerms.name}" matched a Workday term whose name could not be confirmed, with no discount printed; leaving the terms unmatched`);
   }
   return { ...result, extractedPaymentTerms };
+}
+
+function preferredEventYear(result: InvoiceEnrichmentResult): number | null {
+  const date = result.extractedServiceDate ?? result.extractedInvoiceDate;
+  const year = Number(date?.slice(0, 4));
+  return Number.isInteger(year) && year >= 2000 ? year : null;
+}
+
+// The model picks an event from findEvents, and nothing else checks that pick against the email's year, section,
+// or wording. Check it against the cached events and fix or clear a pick the rules reject (see event_match.ts).
+async function applyEventRule(result: InvoiceEnrichmentResult): Promise<InvoiceEnrichmentResult> {
+  const hasEvent = Boolean(result.emailWorktags?.event?.extracted?.trim())
+    || (result.emailBudgetSplits ?? []).some(split => split?.event?.extracted?.trim());
+  if (!hasEvent) return result;
+
+  let events: EventCandidate[];
+  try {
+    const db = await getDatabaseConnection(process.env);
+    const documents = await getDocumentsByType(db, 'event');
+    events = documents.map(document => ({ workdayId: document.workday_id, name: eventNameOf(document) }));
+  } catch (error) {
+    debug('Event cache lookup failed; keeping the event the model resolved:', error);
+    return result;
+  }
+
+  const options = { preferredYear: preferredEventYear(result) };
+  const check = <E extends NonNullable<InvoiceEnrichmentResult['emailWorktags']>['event']>(event: E): E => {
+    const checked = resolveEventCoding(event, events, options) as E;
+    if (checked?.workdayId !== event?.workdayId) {
+      debug('Event rule changed the resolved event', {
+        extracted: event?.extracted,
+        modelWorkdayId: event?.workdayId,
+        workdayId: checked?.workdayId ?? null,
+        ambiguousNames: eventResolutionOf(checked).ambiguousNames,
+      });
+    }
+    return checked;
+  };
+
+  return {
+    ...result,
+    emailWorktags: result.emailWorktags ? { ...result.emailWorktags, event: check(result.emailWorktags.event) } : result.emailWorktags,
+    emailBudgetSplits: result.emailBudgetSplits
+      ? result.emailBudgetSplits.map(split => (split ? { ...split, event: check(split.event) } : split))
+      : result.emailBudgetSplits,
+  };
 }
 
 export async function enrichInvoiceFromAttachments(
@@ -210,7 +257,7 @@ export async function enrichInvoiceFromAttachments(
       ]
     }) as InvoiceMatchingResult;
 
-    const merged = await applyPaymentTermsRule(mergeInvoiceEnrichment(matching, ocr));
+    const merged = await applyEventRule(await applyPaymentTermsRule(mergeInvoiceEnrichment(matching, ocr)));
     if (reimbursement) return applyReimbursementToEnrichment(merged, reimbursement);
     return existingSupplier ? merged : await resolveSupplierByNameEvidence(merged, ocr?.printedSupplier.remitToAddress);
 
@@ -628,7 +675,12 @@ export function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string
     parts.push(`Cost Center: ${wt.costCenter.extracted}${resolved}`);
   }
   if (wt.event?.extracted) {
-    const resolved = wt.event.workdayId ? ' (resolved)' : ' (no Workday match found)';
+    const { name, ambiguousNames } = eventResolutionOf(wt.event);
+    const resolved = wt.event.workdayId
+      ? (name ? ` (resolved: ${name})` : ' (resolved)')
+      : ambiguousNames?.length
+        ? ` (not applied; several events fit: ${ambiguousNames.join(', ')})`
+        : ' (no Workday match found)';
     parts.push(`Event: ${wt.event.extracted}${resolved}`);
   }
   if (wt.lineOfBusiness?.extracted) {

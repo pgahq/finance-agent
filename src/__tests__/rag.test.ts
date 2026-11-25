@@ -543,6 +543,87 @@ Primary Address: 100 PGA Tour Blvd`);
       expect(logged.map((candidate) => candidate.supplierId)).toEqual(['S-0', 'S-1', 'S-2', 'S-3', 'S-4', 'S-5']);
     });
 
+    describe('findEventsTool', () => {
+      const { findEventsTool, EVENT_CANDIDATE_POOL } = require('../lib/rag.js');
+      const eventRow = (workday_id: string, name: string, similarity: number) => ({
+        workday_id, type: 'event', content: `Event Name: ${name}`, metadata: { workdayId: workday_id, name }, similarity: String(similarity),
+      });
+      // The embedding puts the section copies first and the main event well below them, as in SUPIN-477701.
+      const semanticOrder = [
+        eventRow('wid-qx-25', '25QX-Lakeside_Junior_Skills_Series_Season', 0.684),
+        eventRow('wid-qx-27', '27QX-Lakeside_Junior_Skills_Series_Season', 0.68),
+        eventRow('wid-zb-27', '27ZB-Lakeside_Jr_Skills_Series', 0.678),
+        eventRow('wid-zb-26', '26ZB-Lakeside_Jr_Skills_Series', 0.67),
+        eventRow('wid-main-2026', '2026 Lakeside Junior Skills Series', 0.61),
+        eventRow('wid-harbor', '2026 Harbor Open Championship', 0.35),
+      ];
+
+      beforeEach(() => {
+        mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+        mockSearchDocuments.mockResolvedValue(semanticOrder);
+      });
+
+      it('recommends the main event for an abbreviated name even though section copies score higher', async () => {
+        const response = await findEventsTool.execute({ query: '26 Lakeside Jr. Skills Series' });
+
+        expect(response.recommended).toEqual({ workdayId: 'wid-main-2026', name: '2026 Lakeside Junior Skills Series' });
+        expect(response.results[0]).toMatchObject({ workdayId: 'wid-main-2026', match: 'exact' });
+        expect(response.results.map((result: { workdayId: string }) => result.workdayId)).not.toContain('wid-zb-26');
+        expect(response).not.toHaveProperty('ambiguous');
+      });
+
+      it('scores the whole event cache instead of the first few by similarity', async () => {
+        await findEventsTool.execute({ query: '26 Lakeside Jr. Skills Series', limit: 1 });
+
+        expect(mockSearchDocuments).toHaveBeenCalledWith(expect.anything(), expect.anything(), '26 Lakeside Jr. Skills Series', 'event', EVENT_CANDIDATE_POOL);
+      });
+
+      it('recommends the section copy when the email names the section', async () => {
+        const response = await findEventsTool.execute({ query: '26ZB Lakeside Jr. Skills Series' });
+
+        expect(response.recommended).toEqual({ workdayId: 'wid-zb-26', name: '26ZB-Lakeside_Jr_Skills_Series' });
+      });
+
+      it('has no recommendation and lists the tied events when several fit equally', async () => {
+        mockSearchDocuments.mockResolvedValue([
+          eventRow('wid-main-2025', '2025 Lakeside Junior Skills Series', 0.7),
+          eventRow('wid-main-2026', '2026 Lakeside Junior Skills Series', 0.69),
+        ]);
+
+        const response = await findEventsTool.execute({ query: 'Lakeside Jr Skills Series' });
+
+        expect(response.recommended).toBeNull();
+        expect(response.ambiguous).toEqual([
+          { workdayId: 'wid-main-2025', name: '2025 Lakeside Junior Skills Series' },
+          { workdayId: 'wid-main-2026', name: '2026 Lakeside Junior Skills Series' },
+        ]);
+      });
+
+      it('uses the preferred year when the email names none', async () => {
+        mockSearchDocuments.mockResolvedValue([
+          eventRow('wid-main-2025', '2025 Lakeside Junior Skills Series', 0.7),
+          eventRow('wid-main-2026', '2026 Lakeside Junior Skills Series', 0.69),
+        ]);
+
+        const response = await findEventsTool.execute({ query: 'Lakeside Jr Skills Series', preferredYear: 2026 });
+
+        expect(response.recommended?.workdayId).toBe('wid-main-2026');
+      });
+
+      it('applies the similarity threshold only to events matched by meaning', async () => {
+        const response = await findEventsTool.execute({ query: 'Harbor Showcase', similarityThreshold: 0.5 });
+
+        expect(response.recommended).toBeNull();
+        expect(response.results.map((result: { workdayId: string }) => result.workdayId)).toEqual(['wid-main-2026']);
+      });
+
+      it('propagates a cache failure', async () => {
+        mockGetDatabaseConnection.mockRejectedValue(new Error('Database connection failed'));
+
+        await expect(findEventsTool.execute({ query: 'Lakeside' })).rejects.toThrow('Database connection failed');
+      });
+    });
+
     it('omits a concatenated bill-to address from the company embedding query', async () => {
       mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
       mockSearchDocuments.mockResolvedValue([]);
