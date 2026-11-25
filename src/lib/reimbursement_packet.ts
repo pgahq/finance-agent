@@ -23,6 +23,12 @@ import {
 
 export type { ReimbursementPacket };
 
+/**
+ * 'explicit': the email or file names say reimbursement, an expense report or amount to pay. 'inferred': only the word
+ * "expenses" in the subject, a file name, or an AP note, so the documents themselves must show a payable total.
+ */
+export type ReimbursementGate = 'explicit' | 'inferred';
+
 /** A fact the alert must not present as read from the form, because the reads did not agree on it. */
 export type NotConfirmedFact = 'payeeName' | 'formAmount' | 'emailAmount';
 
@@ -39,6 +45,8 @@ export interface FormMathSummary {
  * alert must leave out, and `unconfirmedDetail` is the amount-free reason the form's own totals gave.
  */
 export type ReimbursementRead = ReimbursementPacket & {
+  /** How the text gate let this packet in; see `reimbursementSignalTier`. */
+  gate?: ReimbursementGate;
   unconfirmed?: string;
   unconfirmedDetail?: string;
   notConfirmed?: NotConfirmedFact[];
@@ -90,6 +98,8 @@ export interface AppliedReimbursement {
   confirmedByFormMath?: FormMathSummary;
   /** The coding the form itself prints, kept only for the fields both reads copied the same way. */
   formCoding?: FormCoding;
+  /** Form coding left out of matching because the email or AP notes name that field themselves; the email wins. */
+  formCodingOverriddenByEmail?: FormCoding;
   invoiceDate: string;
   description: string;
 }
@@ -113,6 +123,10 @@ type EmailContextInput = InvoiceData['emailContext'];
 const MIN_CONFIDENCE = 0.8;
 // "reimbursable expenses" on a supplier's invoice is common, so only the verbs and the noun count.
 const SIGNAL = /\breimburs(?:e|es|ed|ing|ement|ements)\b|\bamount\s+to\s+pay\b|\bexpense\s+report\b/i;
+// What people type for the same thing: "Exp Rpt", "Expense Rpt", "Expenses Report", "expense form", "reimb".
+const FORM_WORDING = /\bexp(?:ense)?s?\.?\s*(?:rpt|rep|report)\b|\bexpenses?\s+(?:form|claim|claims|statement|sheet)\b|\breimb\b/i;
+const REIMBURSABLE_EXPENSES = /\breimbursable\s+expenses?\b/gi;
+const EXPENSES_WORD = /\bexpenses?\b/i;
 const READ_ATTEMPTS = 2;
 const EMAIL_TEXT_LIMIT = 12_000;
 const DESCRIPTION_LIMIT = 120;
@@ -136,19 +150,41 @@ const LOOK_BUDGET_MS = 150_000;
 const LOOK_DEADLINE_MS = 210_000;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
-/** A cheap text gate so ordinary invoices never pay for the packet read. */
-export function hasReimbursementSignal(
-  emailContext: Pick<NonNullable<EmailContextInput>, 'subject' | 'plainTextBody' | 'messageSubject' | 'messageBody'> | undefined,
+// File names and subjects separate words with underscores, which regexes count as word characters.
+const spaced = (text: string): string => text.replace(/_/g, ' ');
+
+/**
+ * A cheap text gate so ordinary invoices never pay for the packet read. Explicit wording anywhere in the subject,
+ * bodies (the Intercom notes are in the plain-text body), or file names opens the full read. The bare word "expenses"
+ * only counts in the subject, a file name, or an AP note, never in a supplier's own message body, and the packet it
+ * opens is booked only when the documents show a payable total (`readReimbursementPacket`).
+ */
+export function reimbursementSignalTier(
+  emailContext: Pick<NonNullable<EmailContextInput>, 'subject' | 'plainTextBody' | 'messageSubject' | 'messageBody' | 'adminConversationParts'> | undefined,
   fileNames: string[]
-): boolean {
-  const text = [
+): ReimbursementGate | undefined {
+  const explicitText = spaced([
     emailContext?.subject,
     emailContext?.messageSubject,
     emailContext?.messageBody,
     emailContext?.plainTextBody,
     ...fileNames,
-  ].filter(Boolean).join('\n');
-  return SIGNAL.test(text);
+  ].filter(Boolean).join('\n'));
+  if (SIGNAL.test(explicitText) || FORM_WORDING.test(explicitText)) return 'explicit';
+  const headlineText = spaced([
+    emailContext?.subject,
+    emailContext?.messageSubject,
+    emailContext?.adminConversationParts,
+    ...fileNames,
+  ].filter(Boolean).join('\n')).replace(REIMBURSABLE_EXPENSES, ' ');
+  return EXPENSES_WORD.test(headlineText) ? 'inferred' : undefined;
+}
+
+export function hasReimbursementSignal(
+  emailContext: Parameters<typeof reimbursementSignalTier>[0],
+  fileNames: string[]
+): boolean {
+  return reimbursementSignalTier(emailContext, fileNames) !== undefined;
 }
 
 // Deliberately still messageBody first, not plainTextBody: a live check on the real incident packet showed that
@@ -353,6 +389,39 @@ function mergedFormCoding(first: ReimbursementPacket, second: ReimbursementPacke
     debug('Reimbursement packet coding not agreed by both reads', { dropped, first: first.formCoding, second: second.formCoding });
   }
   return fields.some((field) => merged[field] !== null) ? merged : null;
+}
+
+// A field counts as named by the email only when its label is followed by a value: "Cost Center: 72200", "LOB is Golf",
+// "cost center 72200". A bare label ("use the cost center on the form", "Cost Center Manager" in a signature, a blank
+// "Cost Center:" line in a template) names nothing, so the form's value stays available to the matching model.
+const VALUE_AFTER_LABEL = String.raw`(?:[ \t]*[:#=\u2013-]|[ \t]+is\b|[ \t]+to\b|(?=[ \t]+\d))[ \t]*(?!(?:on|per|from|in)[ \t]+the[ \t]+form\b)[A-Za-z0-9"'(]`;
+const CODING_FIELD_LABELS: ReadonlyArray<readonly [keyof FormCoding, RegExp]> = [
+  ['costCenter', new RegExp(String.raw`\bcost[\s_-]*cent(?:er|re)s?${VALUE_AFTER_LABEL}`, 'i')],
+  ['lineOfBusiness', new RegExp(String.raw`(?:\bLOB\b|\bline[\s_-]+of[\s_-]+business\b)${VALUE_AFTER_LABEL}`, 'i')],
+  ['spendCategory', new RegExp(String.raw`\bspend[\s_-]+categor(?:y|ies)${VALUE_AFTER_LABEL}`, 'i')],
+];
+
+/**
+ * Splits the form's coding into what the matching model may use and what the email overrides. When the email text or
+ * AP notes name a field, the form's value for it is never shown to the model, so the email's value cannot lose to the
+ * form's by a model's choice.
+ */
+export function applyEmailCodingPrecedence(
+  formCoding: FormCoding | null | undefined,
+  emailContext: EmailContextInput
+): { formCoding?: FormCoding; overriddenByEmail?: FormCoding } {
+  if (!formCoding) return {};
+  const text = [emailContext?.plainTextBody, emailContext?.adminConversationParts].filter(Boolean).join('\n');
+  const kept: FormCoding = { ...formCoding };
+  const overridden: FormCoding = { codingValue: null, costCenter: null, lineOfBusiness: null, spendCategory: null };
+  for (const [field, label] of CODING_FIELD_LABELS) {
+    if (formCoding[field] && label.test(text)) {
+      overridden[field] = formCoding[field];
+      kept[field] = null;
+    }
+  }
+  const has = (coding: FormCoding) => Object.values(coding).some((value) => value !== null);
+  return { ...(has(kept) ? { formCoding: kept } : {}), ...(has(overridden) ? { overriddenByEmail: overridden } : {}) };
 }
 
 /**
@@ -565,7 +634,24 @@ export async function readReimbursementPacket(
   emailContext: EmailContextInput,
   abortSignal?: AbortSignal
 ): Promise<ReimbursementRead | undefined> {
-  if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
+  const gate = reimbursementSignalTier(emailContext, attachments.map((attachment) => attachment.fileName));
+  if (!gate) return undefined;
+  const read = await readGatedPacket(attachments, emailContext, gate, abortSignal);
+  return read && { ...read, gate };
+}
+
+/** The first read shows a payable total beside a recognized label: the document itself is an expense form. */
+function printsPayableTotal(packet: ReimbursementPacket): boolean {
+  const amount = parseFormAmountToPay(packet.formAmountToPay);
+  return amount !== undefined && cents(amount) > 0 && payableTotalLabel(packet.formAmountLabel) !== undefined;
+}
+
+async function readGatedPacket(
+  attachments: PresignedAttachment[],
+  emailContext: EmailContextInput,
+  gate: ReimbursementGate,
+  abortSignal: AbortSignal | undefined
+): Promise<ReimbursementRead | undefined> {
   const startedAt = Date.now();
   const readable = await convertOfficeAttachmentsForModel(attachments);
   const parts = attachmentContentParts(readable);
@@ -574,8 +660,23 @@ export async function readReimbursementPacket(
     return undefined;
   }
   const fileList = readable.map((attachment) => `${attachment.fileName} (${attachment.contentType})`).join('; ');
-  const first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  let first: ReimbursementPacket;
+  try {
+    first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  } catch (error) {
+    // Only the word "expenses" opened this read, so an outage must not fail an ordinary invoice. An explicit signal
+    // still throws: a packet that says it is a reimbursement is never silently booked as a supplier invoice.
+    if (gate === 'explicit' || abortSignal?.aborted) throw error;
+    debug('Reimbursement packet read failed on an inferred signal; booking as a supplier invoice', { error });
+    return undefined;
+  }
   if (first.kind !== 'reimbursement') return first;
+  if (gate === 'inferred' && !printsPayableTotal(first)) {
+    // Nothing but the word "expenses" suggested a reimbursement and no form total backs it, so a lone folio or
+    // receipt keeps going down the supplier invoice path as before.
+    debug('Reimbursement packet not confirmed from an inferred signal: no payable total on the documents', first);
+    return { ...first, kind: 'supplier_invoice' };
+  }
 
   const second = await readPacketOnce(fileList, parts, emailContext, abortSignal, true);
   const others = disagreements(first, second, false);
@@ -786,6 +887,7 @@ export async function decideReimbursement(
   const totalLabel = packet.confirmedByFormMath?.label ?? payableTotalLabel(packet.formAmountLabel);
   const payee = await resolvePayee(db, packet, options.defaultSupplierWid, options.emailContext);
   if ('failure' in payee) return manual(packet, payee.failure);
+  const { formCoding, overriddenByEmail } = applyEmailCodingPrecedence(packet.formCoding, options.emailContext);
 
   return {
     outcome: 'apply',
@@ -796,7 +898,8 @@ export async function decideReimbursement(
       ...(totalLabel ? { totalLabel } : {}),
       ...(amount.emailCap !== undefined ? { emailCap: amount.emailCap } : {}),
       ...(packet.confirmedByFormMath ? { confirmedByFormMath: packet.confirmedByFormMath } : {}),
-      ...(packet.formCoding ? { formCoding: packet.formCoding } : {}),
+      ...(formCoding ? { formCoding } : {}),
+      ...(overriddenByEmail ? { formCodingOverriddenByEmail: overriddenByEmail } : {}),
       invoiceDate,
       description: reimbursementDescription(packet),
     },
@@ -953,18 +1056,26 @@ export function reimbursementCodingLine(reimbursement: Pick<AppliedReimbursement
 
 /** What the invoice note says about the form's coding, claiming only what was applied. Empty when the form had none. */
 export function reimbursementCodingNote(
-  reimbursement: Pick<AppliedReimbursement, 'formCoding'>,
+  reimbursement: Pick<AppliedReimbursement, 'formCoding' | 'formCodingOverriddenByEmail'>,
   applied: { companyFromForm: boolean; defaultCompany: boolean }
 ): string {
   const printed = formCodingText(reimbursement.formCoding);
-  if (!printed) return '';
+  const overridden = formCodingText(reimbursement.formCodingOverriddenByEmail);
+  const overriddenLabels = CODING_LABELS.filter(([field]) => reimbursement.formCodingOverriddenByEmail?.[field]).map(([, label]) => label);
+  const labelList = overriddenLabels.length > 1
+    ? `${overriddenLabels.slice(0, -1).join(', ')} and ${overriddenLabels[overriddenLabels.length - 1]}`
+    : overriddenLabels.join('');
+  const email = overridden
+    ? `The email text or AP notes name the ${labelList} themselves, so the form's ${overridden} ${overriddenLabels.length > 1 ? 'were' : 'was'} ${applied.defaultCompany ? 'not used' : 'not passed to the matching model'}.`
+    : '';
+  if (!printed) return email ? `Reimbursement form coding: ${email}` : '';
   const company = applied.companyFromForm
     ? " The company came from the form's coding."
     : applied.defaultCompany ? '' : " The company did not come from the form's coding.";
   const fallback = applied.defaultCompany
     ? ' No company was confirmed from the email, the AP notes, or the form, so the default coding was applied and none of this coding was used.'
     : '';
-  return `Reimbursement form coding: the form prints (whitespace and quote marks normalized) ${printed}. The matching model was asked to use it for any coding field the email text and AP notes do not name (the Email Worktags section lists what was applied); when they name different coding, the email text and AP notes win.${company}${fallback}`;
+  return `Reimbursement form coding: the form prints (whitespace and quote marks normalized) ${printed}. The matching model was asked to use it for any coding field the email text and AP notes do not name (the Email Worktags section lists what was applied); when they name different coding, the email text and AP notes win.${company}${fallback}${email ? ` ${email}` : ''}`;
 }
 
 /** One paragraph for the Workday invoice notes, claiming only what was submitted. */

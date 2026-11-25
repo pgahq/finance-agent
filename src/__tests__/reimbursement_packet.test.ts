@@ -22,6 +22,7 @@ import { attachmentContentParts } from '../lib/invoice_ocr.js';
 import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
 import { composeSuppliersInvoiceNumber } from '../lib/invoice_memo.js';
 import {
+  applyEmailCodingPrecedence,
   applyReimbursementToEnrichment,
   decideReimbursement,
   formMathResult,
@@ -35,6 +36,7 @@ import {
   reimbursementMatchingContext,
   reimbursementNote,
   reimbursementOcr,
+  reimbursementSignalTier,
   reimbursementSlackLines,
   type AppliedReimbursement,
   type FormMathSummary,
@@ -88,6 +90,181 @@ describe('hasReimbursementSignal', () => {
 
   it('does not fire on an ordinary invoice email', () => {
     expect(hasReimbursementSignal({ subject: 'Invoice 1234', plainTextBody: 'Attached is our invoice.' } as never, ['invoice.pdf'])).toBe(false);
+  });
+});
+
+describe('reimbursementSignalTier', () => {
+  const expRptFile = 'SAMPLE JANE_Exp Rpt_AUG 17-21, 2026 PGA Core Comm Mtgs- Super Regionals.pdf';
+
+  it('is explicit for an abbreviated expense report file name, even with underscores around it', () => {
+    expect(reimbursementSignalTier(undefined, [expRptFile])).toBe('explicit');
+    expect(reimbursementSignalTier(undefined, ['Expense_Reimbursement_Form.pdf'])).toBe('explicit');
+    expect(reimbursementSignalTier(undefined, ['Expense Rpt.pdf'])).toBe('explicit');
+    expect(reimbursementSignalTier({ subject: 'Jane Exp. Report Aug' } as never, [])).toBe('explicit');
+    expect(reimbursementSignalTier({ messageBody: 'Attached is the expense form for Jane.' } as never, [])).toBe('explicit');
+  });
+
+  it('is inferred when only the subject, a file name, or an AP note says expenses', () => {
+    expect(reimbursementSignalTier({ subject: 'Jane Sample Core Committees and Super Regionals Expenses' } as never, ['packet.pdf'])).toBe('inferred');
+    expect(reimbursementSignalTier({ messageSubject: 'August expenses' } as never, [])).toBe('inferred');
+    expect(reimbursementSignalTier(undefined, ['Jane Sample Expenses.pdf'])).toBe('inferred');
+    expect(reimbursementSignalTier({ subject: 'Packet', adminConversationParts: '<p>Please enter Jane\'s expenses with this coding.</p>' } as never, [])).toBe('inferred');
+  });
+
+  it('prefers explicit wording over the inferred word', () => {
+    expect(reimbursementSignalTier({ subject: 'Expenses' } as never, [expRptFile])).toBe('explicit');
+  });
+
+  it('ignores the word expenses in a supplier body, a reimbursable-expenses phrase, or a longer word', () => {
+    expect(reimbursementSignalTier({ subject: 'Invoice 1234', plainTextBody: 'Our invoice lists travel expenses.', messageBody: 'Travel expenses are included.' } as never, ['invoice.pdf'])).toBeUndefined();
+    expect(reimbursementSignalTier({ subject: 'Reimbursable expenses are itemized' } as never, [])).toBeUndefined();
+    expect(reimbursementSignalTier({ subject: 'Expedia booking' } as never, ['expedia.pdf'])).toBeUndefined();
+  });
+});
+
+describe('an expense report whose email says only "Expenses"', () => {
+  // Modeled on SUPIN-477644: a PGA expense report grid form (TOTALS / Sum of All Columns) followed by a hotel folio, sent
+  // under a subject that says "Expenses", a file name that says "Exp Rpt", and a body that only gave coding.
+  const fictionalPayee = {
+    workday_id: 'wid-sample',
+    content: 'Company Name: JANE Q SAMPLE\nSupplier ID: S-000456\nStatus: Active',
+    metadata: { supplierName: 'JANE Q SAMPLE', supplierId: 'S-000456' },
+  };
+  const emailContext = {
+    subject: 'Jane Sample Core Committees and Super Regionals Expenses',
+    messageSubject: 'Jane Sample Core Committees and Super Regionals Expenses',
+    messageBody: 'Coding: 310. Cost Center: Member Meetings, Awards, and Communications. LOB: Member Meetings. Fund: General-Unrestricted.',
+    plainTextBody: 'Coding: 310. Cost Center: Member Meetings, Awards, and Communications. LOB: Member Meetings. Fund: General-Unrestricted.',
+  };
+  const expenseReport = packet({
+    payeeName: 'Jane Q Sample',
+    formAmountToPay: '$1,089.69',
+    formAmountLabel: 'TOTALS',
+    formDate: '8/22/2026',
+    expenseKind: 'travel',
+    purpose: '2026 August Core Committee Meetings',
+    formCoding: { codingValue: '310', costCenter: 'Member Meetings, Awards, and Communications', lineOfBusiness: 'COMMITTEES', spendCategory: null },
+    evidence: ['PGA OF AMERICA EXPENSE REPORT', 'TOTALS $994.80 $94.89 $0.00 $0.00 $1,089.69'],
+  });
+  const attachments = [{ fileName: 'SAMPLE JANE_Exp Rpt_AUG 17-21, 2026 PGA Core Comm Mtgs- Super Regionals.pdf', contentType: 'application/pdf' }] as never;
+
+  it('is read, booked to the person for the form total, with the email coding winning over the form coding', async () => {
+    findDocuments.mockResolvedValue([fictionalPayee]);
+    aiResponse.mockReset().mockResolvedValue(expenseReport);
+    const read = await readReimbursementPacket(attachments, emailContext as never);
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(read).toMatchObject({ kind: 'reimbursement', gate: 'explicit' });
+
+    const decision = await decideReimbursement(db as never, read, { emailContext: emailContext as never });
+    expect(decision).toMatchObject({
+      outcome: 'apply',
+      reimbursement: {
+        amount: 1089.69,
+        amountLabel: '$1,089.69',
+        totalLabel: 'TOTALS',
+        invoiceDate: '2026-08-22',
+        payee: { supplierName: 'JANE Q SAMPLE', supplierId: 'S-000456', nameOnForm: 'Jane Q Sample' },
+        formCoding: { codingValue: '310', costCenter: null, lineOfBusiness: null },
+        formCodingOverriddenByEmail: { costCenter: 'Member Meetings, Awards, and Communications', lineOfBusiness: 'COMMITTEES' },
+      },
+    });
+    const { reimbursement } = decision as Extract<typeof decision, { outcome: 'apply' }>;
+    expect(reimbursementMatchingContext(reimbursement)).not.toContain('COMMITTEES');
+    expect(reimbursementCodingNote(reimbursement, { companyFromForm: false, defaultCompany: false })).toContain(
+      "The email text or AP notes name the cost center and LOB themselves, so the form's cost center \"Member Meetings, Awards, and Communications\", LOB \"COMMITTEES\" were not passed to the matching model."
+    );
+    expect(reimbursementNote(reimbursement)).toContain('Receipts and folios in the packet are supporting documents only');
+    expect(reimbursementOcr(reimbursement).extractedInvoiceLines).toHaveLength(1);
+  });
+
+  it('is read from the subject alone when the file name gives no hint, and still needs the form total', async () => {
+    findDocuments.mockResolvedValue([fictionalPayee]);
+    aiResponse.mockReset().mockResolvedValue(expenseReport);
+    const read = await readReimbursementPacket([{ fileName: 'packet.pdf', contentType: 'application/pdf' }] as never, emailContext as never);
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(read).toMatchObject({ kind: 'reimbursement', gate: 'inferred', formAmountToPay: '$1,089.69' });
+  });
+
+  it('books as a supplier invoice when the read fails on an inferred signal, but still throws on an explicit one', async () => {
+    aiResponse.mockReset().mockRejectedValue(new Error('gateway timeout'));
+    const folio = [{ fileName: 'folio.pdf', contentType: 'application/pdf' }] as never;
+    expect(await readReimbursementPacket(folio, { subject: 'Code to travel expenses' } as never)).toBeUndefined();
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    await expect(readReimbursementPacket(folio, { subject: 'Hotel reimbursement' } as never)).rejects.toThrow('gateway timeout');
+    aiResponse.mockReset().mockRejectedValue(new Error('gateway timeout'));
+    await expect(readReimbursementPacket(
+      [{ fileName: 'Jane Exp Rpt.pdf', contentType: 'application/pdf' }] as never,
+      { subject: 'Expenses' } as never
+    )).rejects.toThrow('gateway timeout');
+  });
+
+  it('leaves a lone folio under an "Expenses" subject on the supplier invoice path, with one read', async () => {
+    aiResponse.mockReset().mockResolvedValue(packet({ formAmountToPay: null, formAmountLabel: null, formCoding: null }));
+    const read = await readReimbursementPacket([{ fileName: 'folio.pdf', contentType: 'application/pdf' }] as never, { subject: 'August expenses' } as never);
+    expect(aiResponse).toHaveBeenCalledTimes(1);
+    expect(read).toMatchObject({ kind: 'supplier_invoice', gate: 'inferred' });
+    expect(await decideReimbursement(db as never, read)).toEqual({ outcome: 'not_reimbursement' });
+  });
+
+  it('does not take a vendor invoice with an "Expenses" subject', async () => {
+    aiResponse.mockReset().mockResolvedValue(packet({ kind: 'supplier_invoice' }));
+    const read = await readReimbursementPacket([{ fileName: 'invoice.pdf', contentType: 'application/pdf' }] as never, { subject: 'Invoice for event expenses' } as never);
+    expect(aiResponse).toHaveBeenCalledTimes(1);
+    expect(await decideReimbursement(db as never, read)).toEqual({ outcome: 'not_reimbursement' });
+  });
+
+  it('still stops in manual entry when an explicitly worded packet prints no total', async () => {
+    aiResponse.mockReset().mockResolvedValue(packet({ formAmountToPay: null, formAmountLabel: null }));
+    const read = await readReimbursementPacket([{ fileName: 'Exp Rpt.pdf', contentType: 'application/pdf' }] as never, { subject: 'Expenses' } as never);
+    expect(read).toMatchObject({ kind: 'reimbursement', gate: 'explicit' });
+    expect((await decideReimbursement(db as never, read)).outcome).toBe('manual_entry');
+  });
+});
+
+describe('applyEmailCodingPrecedence', () => {
+  const form = { codingValue: '310', costCenter: 'Sample Programs', lineOfBusiness: 'COMMITTEES', spendCategory: 'Lodging' };
+
+  it('keeps every form field the email and notes do not name', () => {
+    expect(applyEmailCodingPrecedence(form, { plainTextBody: 'Please pay Jane back.' } as never)).toEqual({ formCoding: form });
+  });
+
+  it('drops only the fields the email names, whichever source names them', () => {
+    expect(applyEmailCodingPrecedence(form, { plainTextBody: 'LOB: Member Meetings' } as never)).toEqual({
+      formCoding: { ...form, lineOfBusiness: null },
+      overriddenByEmail: { codingValue: null, costCenter: null, lineOfBusiness: 'COMMITTEES', spendCategory: null },
+    });
+    expect(applyEmailCodingPrecedence(form, { plainTextBody: 'x', adminConversationParts: '<p>Cost Center 72200, Spend Category: Travel</p>' } as never)).toEqual({
+      formCoding: { ...form, costCenter: null, spendCategory: null },
+      overriddenByEmail: { codingValue: null, costCenter: 'Sample Programs', lineOfBusiness: null, spendCategory: 'Lodging' },
+    });
+  });
+
+  it('does not treat a label without a value as the email naming the field', () => {
+    for (const text of [
+      'Please use the cost center on the form.',
+      'Regards,\nPat Sample\nCost Center Manager',
+      'Cost Center:\nLOB:\nSpend Category:\n',
+      'The LOB is on the form.',
+      'line of business per the form',
+    ]) {
+      expect(applyEmailCodingPrecedence(form, { plainTextBody: text } as never)).toEqual({ formCoding: form });
+    }
+  });
+
+  it('reads a label followed by a value in the usual ways', () => {
+    for (const text of ['Cost Center: 72200', 'cost center is 72200', 'coded to cost center 72200', 'Cost Center - Sample Programs', 'COST CENTRE #72200']) {
+      expect(applyEmailCodingPrecedence(form, { plainTextBody: text } as never).overriddenByEmail?.costCenter).toBe('Sample Programs');
+    }
+  });
+
+  it('never drops the coding value, which carries the company the code already prefers from the email', () => {
+    const result = applyEmailCodingPrecedence({ ...form }, { plainTextBody: 'Cost Center: A. LOB: B. Spend Category: C.' } as never);
+    expect(result.formCoding).toEqual({ codingValue: '310', costCenter: null, lineOfBusiness: null, spendCategory: null });
+  });
+
+  it('has nothing to split when the form printed no coding or the email names a field the form left blank', () => {
+    expect(applyEmailCodingPrecedence(null, { plainTextBody: 'LOB: x' } as never)).toEqual({});
+    expect(applyEmailCodingPrecedence({ codingValue: null, costCenter: null, lineOfBusiness: null, spendCategory: null }, { plainTextBody: 'LOB: x' } as never)).toEqual({});
   });
 });
 
