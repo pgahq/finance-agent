@@ -87,7 +87,7 @@ function wordToken(raw: string): string | null {
 export function parseEventText(
   text: string,
   knownSectionCodes: ReadonlySet<string> = new Set(),
-  options: { standaloneSection?: boolean } = {}
+  options: { standaloneSection?: boolean; trailingYear?: boolean } = {}
 ): ParsedEventText {
   let year: number | null = null;
   let sectionCode: string | null = null;
@@ -131,9 +131,9 @@ export function parseEventText(
       sectionCode = raw;
       continue;
     }
-    if (/^\d{2}$/.test(raw) && index === 0) {
+    if (/^\d{2}$/.test(raw) && (index === 0 || (options.trailingYear && index === raws.length - 1))) {
       const parsed = expandYear(raw);
-      if (parsed != null) twoDigit = { index, year: parsed };
+      if (parsed != null) twoDigit ??= { index, year: parsed };
     }
     words.push({ raw, index });
   }
@@ -220,6 +220,14 @@ export function rankEventCandidates<T extends EventCandidate>(
     const asWord = parseEventText(query, known, { standaloneSection: false });
     if (asWord.sectionCode == null) {
       const retried = rankParsedQuery(asWord, usable, options);
+      if (retried.recommended || retried.ambiguous.length > 0) return retried;
+    }
+  }
+  if (ranking.queryYear == null && !ranking.recommended && ranking.ambiguous.length === 0) {
+    // "PGA Jr. League 26": a trailing number is a year only when it matches no event as a word ("Top 25").
+    const withYear = parseEventText(query, known, { trailingYear: true });
+    if (withYear.year != null) {
+      const retried = rankParsedQuery(withYear, usable, options);
       if (retried.recommended || retried.ambiguous.length > 0) return retried;
     }
   }

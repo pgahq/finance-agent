@@ -212,6 +212,15 @@ describe('rankEventCandidates', () => {
     expect(parseEventText('Harbor Under 30')).toMatchObject({ year: null, tokens: ['harbor', 'under', '30'] });
   });
 
+  it('reads a trailing two-digit year only when the number matches no event as a word', () => {
+    const years = [MAIN_2025, MAIN_2026];
+
+    expect(rankEventCandidates('Lakeside Jr Skills Series 26', years).recommended?.workdayId).toBe(MAIN_2026.workdayId);
+    expect(rankEventCandidates('Lakeside Jr Skills Series 25', years).recommended?.workdayId).toBe(MAIN_2025.workdayId);
+    expect(rankEventCandidates('Lakeside Jr Skills Series 27', years).recommended).toBeNull();
+    expect(rankEventCandidates('Junior Tour Top 25', [{ workdayId: 'wid-top', name: '2026 Junior Tour Top 25' }]).recommended?.workdayId).toBe('wid-top');
+  });
+
   it('returns nothing for an empty query', () => {
     expect(rankEventCandidates('26', CATALOG).ranked).toEqual([]);
   });
